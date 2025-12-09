@@ -1,0 +1,199 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap');
+
+@layer base {
+  :root {
+    /* Light mode: soft slate background with cyan/teal primary and amber accent */
+    --background: 210 20% 98%;
+    --foreground: 222 47% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 12%;
+
+    /* Primary: cyan/teal */
+    --primary: 188 84% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary: soft indigo for contrast */
+    --secondary: 230 70% 55%;
+    --secondary-foreground: 0 0% 100%;
+
+    /* Accent: warm amber for highlights */
+    --accent: 38 92% 55%;
+    --accent-foreground: 0 0% 10%;
+
+    --muted: 214 32% 96%;
+    --muted-foreground: 215 15% 40%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 20% 90%;
+    --input: 210 20% 90%;
+    --ring: 188 84% 45%;
+
+    --radius: 0.75rem;
+
+    /* Custom tokens */
+    /* Glacier-inspired gradients: icy cyan, sky blue, soft indigo */
+    --gradient-primary: linear-gradient(135deg, hsl(190 90% 72%) 0%, hsl(195 92% 68%) 30%, hsl(210 80% 62%) 65%, hsl(230 65% 60%) 100%);
+    --gradient-secondary: linear-gradient(135deg, hsl(200 80% 70%) 0%, hsl(220 80% 65%) 50%, hsl(240 70% 60%) 100%);
+    --gradient-hero: linear-gradient(145deg, hsl(210 40% 96%) 0%, hsl(195 85% 92%) 35%, hsl(200 90% 88%) 65%, hsl(220 70% 92%) 100%);
+    --shadow-primary: 0 4px 14px 0 hsl(188 84% 45% / 0.25);
+    --shadow-card: 0 4px 6px -1px hsl(0 0% 0% / 0.05), 0 2px 4px -2px hsl(0 0% 0% / 0.05);
+    --shadow-card-hover: 0 20px 25px -5px hsl(0 0% 0% / 0.1), 0 8px 10px -6px hsl(0 0% 0% / 0.1);
+
+    --sidebar-background: 210 20% 98%;
+    --sidebar-foreground: 222 47% 20%;
+    --sidebar-primary: 188 84% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 214 32% 96%;
+    --sidebar-accent-foreground: 222 47% 20%;
+    --sidebar-border: 210 20% 90%;
+    --sidebar-ring: 188 84% 45%;
+  }
+
+  .dark {
+    /* Dark mode: deep slate with vibrant cyan/teal and warm accent */
+    --background: 222 47% 8%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 47% 12%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 47% 12%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 188 84% 52%;
+    --primary-foreground: 222 47% 8%;
+
+    --secondary: 230 70% 60%;
+    --secondary-foreground: 222 47% 8%;
+
+    --accent: 38 92% 60%;
+    --accent-foreground: 222 47% 8%;
+
+    --muted: 222 47% 16%;
+    --muted-foreground: 215 20% 70%;
+
+    --destructive: 0 62% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 222 47% 20%;
+    --input: 222 47% 20%;
+    --ring: 188 84% 52%;
+
+    --gradient-hero: linear-gradient(145deg, hsl(222 47% 8%) 0%, hsl(210 40% 12%) 35%, hsl(210 60% 18%) 70%, hsl(220 60% 20%) 100%);
+    --shadow-primary: 0 4px 14px 0 hsl(188 84% 52% / 0.35);
+    --shadow-card: 0 4px 6px -1px hsl(0 0% 0% / 0.3), 0 2px 4px -2px hsl(0 0% 0% / 0.2);
+    --shadow-card-hover: 0 20px 25px -5px hsl(0 0% 0% / 0.4), 0 8px 10px -6px hsl(0 0% 0% / 0.3);
+
+    --sidebar-background: 222 47% 8%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 188 84% 52%;
+    --sidebar-primary-foreground: 222 47% 8%;
+    --sidebar-accent: 222 47% 16%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 222 47% 20%;
+    --sidebar-ring: 188 84% 52%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold tracking-tight;
+  }
+}
+
+@layer utilities {
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+
+  .gradient-secondary {
+    background: var(--gradient-secondary);
+  }
+
+  .gradient-hero {
+    background: var(--gradient-hero);
+  }
+
+  .shadow-primary {
+    box-shadow: var(--shadow-primary);
+  }
+
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+
+  .shadow-card-hover {
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-cyan-300 via-sky-400 to-indigo-400;
+  }
+}
+
+/* Falling snow overlay inspired by common CSS snow effects */
+@keyframes snowfall {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 0 1024px, 0 768px, 0 512px;
+  }
+}
+
+@layer utilities {
+  .snow-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      radial-gradient(2px 2px at 20px 20px, hsl(0 0% 100% / 0.7) 50%, transparent 51%),
+      radial-gradient(2px 2px at 80px 40px, hsl(0 0% 100% / 0.5) 50%, transparent 51%),
+      radial-gradient(3px 3px at 40px 80px, hsl(0 0% 100% / 0.4) 50%, transparent 51%);
+    background-repeat: repeat;
+    background-size: 200px 200px, 250px 250px, 300px 300px;
+    opacity: 0.4;
+    mix-blend-mode: screen;
+    animation: snowfall 22s linear infinite;
+  }
+}
+
+@layer components {
+  .tool-card {
+    @apply relative overflow-hidden rounded-xl bg-card p-6 shadow-card transition-all duration-300 hover:shadow-card-hover hover:-translate-y-1;
+  }
+
+  .feature-card {
+    @apply rounded-2xl bg-card/50 backdrop-blur-sm border border-border/50 p-8 transition-all duration-300 hover:bg-card hover:border-border;
+  }
+
+  .btn-hero {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-8 py-4 text-lg font-semibold transition-all duration-300;
+  }
+
+  .upload-zone {
+    @apply relative flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-muted/30 p-12 transition-all duration-300 hover:border-primary/50 hover:bg-muted/50;
+  }
+
+  .upload-zone-active {
+    @apply border-primary bg-primary/5 scale-[1.02];
+  }
+}
