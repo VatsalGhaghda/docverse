@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { FileStack, ArrowRight, RotateCcw, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ToolPageLayout } from "@/components/ToolPageLayout";
@@ -12,6 +12,10 @@ export default function MergePDF() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [uploadKey, setUploadKey] = useState(0);
   const [progress, setProgress] = useState(0);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const uploadRef = useRef<HTMLDivElement | null>(null);
+  const loadingRef = useRef<HTMLDivElement | null>(null);
+  const completeRef = useRef<HTMLDivElement | null>(null);
 
   const handleProcess = async () => {
     const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -34,16 +38,17 @@ export default function MergePDF() {
 
         xhr.open("POST", `${apiBase}/merge-pdf`);
 
-        // Dummy loader: smoothly increase progress up to ~95% while request is in flight
+        // Dummy loader: smoothly increase progress up to ~92% while request is in flight
+        // tuned to reach the low 90s in ~2–2.5s under normal conditions
         const interval = window.setInterval(() => {
           setProgress((prev) => {
-            if (prev >= 95) {
+            if (prev >= 92) {
               return prev;
             }
-            const next = prev + 3;
-            return next > 95 ? 95 : next;
+            const next = prev + 5;
+            return next > 92 ? 92 : next;
           });
-        }, 150);
+        }, 120);
 
         xhr.responseType = "blob";
 
@@ -85,6 +90,8 @@ export default function MergePDF() {
       setDownloadUrl(null);
     }
     setUploadKey((prev) => prev + 1);
+    // Scroll back to top of the page
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const handleDownload = () => {
@@ -101,6 +108,24 @@ export default function MergePDF() {
   const allReady =
     files.length >= 2 && files.every((file: any) => file.status === "complete");
 
+  // When merging (loader visible), center loader in viewport
+  useEffect(() => {
+    if (isProcessing && !isComplete && loadingRef.current) {
+      const rect = loadingRef.current.getBoundingClientRect();
+      const offset = window.scrollY + rect.top - 180; // 180px padding from top
+      window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+    }
+  }, [isProcessing, isComplete]);
+
+  // No additional scroll on completion; keep the page where the loader was
+
+  // Auto-scroll to merge action section once there are enough files
+  useEffect(() => {
+    if (files.length >= 2 && previewRef.current) {
+      previewRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [files.length]);
+
   return (
     <ToolPageLayout
       title="Merge PDF"
@@ -112,7 +137,7 @@ export default function MergePDF() {
         {!isComplete ? (
           isProcessing ? (
             // Full-width merging screen (similar to iLovePDF style)
-            <div className="py-16 flex flex-col items-center gap-6">
+            <div ref={loadingRef} className="py-16 flex flex-col items-center gap-6">
               <h2 className="text-2xl font-semibold">Merging PDFs...</h2>
               <div className="relative h-24 w-24">
                 <div className="h-24 w-24 rounded-full border-[6px] border-primary-foreground/10" />
@@ -127,20 +152,22 @@ export default function MergePDF() {
             </div>
           ) : (
             <>
-              <FileUploadZone
-                key={uploadKey}
-                accept=".pdf"
-                multiple
-                maxFiles={5}
-                onFilesChange={setFiles}
-              />
+              <div ref={uploadRef}>
+                <FileUploadZone
+                  key={uploadKey}
+                  accept=".pdf"
+                  multiple
+                  maxFiles={5}
+                  onFilesChange={setFiles}
+                />
+              </div>
 
               {error && (
                 <p className="mt-4 text-sm text-destructive text-center">{error}</p>
               )}
 
               {files.length >= 2 && (
-                <div className="mt-8 flex flex-col items-center gap-4">
+                <div ref={previewRef} className="mt-8 flex flex-col items-center gap-4">
                   <Button
                     size="lg"
                     className="btn-hero gradient-primary shadow-primary"
@@ -159,7 +186,7 @@ export default function MergePDF() {
             </>
           )
         ) : (
-          <div className="text-center py-12">
+          <div ref={completeRef} className="text-center py-12">
             <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-secondary/10">
               <FileStack className="h-10 w-10 text-secondary" />
             </div>

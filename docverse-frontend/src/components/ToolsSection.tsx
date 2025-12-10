@@ -5,11 +5,15 @@ import {
   FileOutput, 
   ScanText, 
   Lock,
+  Unlock,
   FileSignature,
   FileImage,
   FileText,
   FileSpreadsheet,
   Presentation,
+  FileCode2,
+  ListOrdered,
+  PanelsTopLeft,
   Image as ImageIcon,
 } from "lucide-react";
 import { ToolCard } from "./ToolCard";
@@ -79,6 +83,13 @@ const tools = [
     color: "accent" as const,
   },
   {
+    title: "PDF to HTML",
+    description: "Convert PDFs into clean HTML for the web.",
+    icon: FileCode2,
+    href: "/pdf-to-html",
+    color: "primary" as const,
+  },
+  {
     title: "Image to PDF",
     description: "Combine JPG/PNG images into a single PDF.",
     icon: ImageIcon,
@@ -100,6 +111,13 @@ const tools = [
     color: "accent" as const,
   },
   {
+    title: "Unlock PDF",
+    description: "Remove password protection from PDFs you own.",
+    icon: Unlock,
+    href: "/unlock",
+    color: "secondary" as const,
+  },
+  {
     title: "Sign PDF",
     description: "Add your signature to documents electronically.",
     icon: FileSignature,
@@ -112,6 +130,20 @@ const tools = [
     icon: FileImage,
     href: "/pdf-to-image",
     color: "secondary" as const,
+  },
+  {
+    title: "Add Page Numbers",
+    description: "Insert page numbers into your PDF.",
+    icon: ListOrdered,
+    href: "/page-numbers",
+    color: "accent" as const,
+  },
+  {
+    title: "Organize PDF",
+    description: "Reorder and prepare pages in your PDF.",
+    icon: PanelsTopLeft,
+    href: "/organize",
+    color: "primary" as const,
   },
 ];
 

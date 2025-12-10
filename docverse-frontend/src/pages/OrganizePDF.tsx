@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { FileSpreadsheet, ArrowRight, RotateCcw, Download } from "lucide-react";
+import { PanelsTopLeft, ArrowRight, RotateCcw, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ToolPageLayout } from "@/components/ToolPageLayout";
 import { FileUploadZone } from "@/components/FileUploadZone";
 
-export default function ExcelToPDF() {
+export default function OrganizePDF() {
   const [files, setFiles] = useState<any[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
@@ -13,7 +13,6 @@ export default function ExcelToPDF() {
   const [uploadKey, setUploadKey] = useState(0);
   const [progress, setProgress] = useState(0);
   const previewRef = useRef<HTMLDivElement | null>(null);
-  const uploadRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
 
   const activeFile = files[0]?.file as File | undefined;
@@ -30,13 +29,13 @@ export default function ExcelToPDF() {
     setProgress(8);
 
     const formData = new FormData();
-    formData.append("file", activeFile, activeFile.name ?? "spreadsheet.xlsx");
+    formData.append("file", activeFile, activeFile.name ?? "document.pdf");
 
     try {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
 
-        xhr.open("POST", `${apiBase}/convert/excel-to-pdf`);
+        xhr.open("POST", `${apiBase}/organize-pdf`);
         xhr.responseType = "blob";
 
         const interval = window.setInterval(() => {
@@ -70,8 +69,8 @@ export default function ExcelToPDF() {
         xhr.send(formData);
       });
     } catch (err) {
-      console.error("Error converting Excel to PDF", err);
-      setError("Something went wrong while converting your spreadsheet. Please try again.");
+      console.error("Error organizing PDF", err);
+      setError("Something went wrong while organizing your PDF. Please try again.");
     } finally {
       setIsProcessing(false);
     }
@@ -106,19 +105,19 @@ export default function ExcelToPDF() {
 
   return (
     <ToolPageLayout
-      title="Excel to PDF"
-      description="Convert Excel spreadsheets (.xls, .xlsx) into polished PDFs for reports and sharing."
-      icon={FileSpreadsheet}
-      iconColor="secondary"
+      title="Organize PDF"
+      description="Reorder, remove, or prepare pages in your PDF. Advanced page operations will be added in later phases."
+      icon={PanelsTopLeft}
+      iconColor="primary"
     >
       <div className="mx-auto max-w-3xl">
         {!isComplete ? (
           isProcessing ? (
             <div ref={loadingRef} className="py-16 flex flex-col items-center gap-6">
-              <h2 className="text-2xl font-semibold">Converting to PDF...</h2>
+              <h2 className="text-2xl font-semibold">Organizing PDF...</h2>
               <div className="relative h-24 w-24">
-                <div className="h-24 w-24 rounded-full border-[6px] border-secondary-foreground/10" />
-                <div className="absolute inset-0 rounded-full border-[6px] border-secondary border-t-transparent animate-spin" />
+                <div className="h-24 w-24 rounded-full border-[6px] border-primary-foreground/10" />
+                <div className="absolute inset-0 rounded-full border-[6px] border-primary border-t-transparent animate-spin" />
                 <div className="absolute inset-0 flex items-center justify-center text-sm font-semibold">
                   {progress}%
                 </div>
@@ -129,33 +128,32 @@ export default function ExcelToPDF() {
             </div>
           ) : (
             <>
-              <div ref={uploadRef}>
-                <FileUploadZone
-                  key={uploadKey}
-                  accept=".xls,.xlsx"
-                  multiple={false}
-                  maxFiles={1}
-                  onFilesChange={setFiles}
-                />
-              </div>
+              <FileUploadZone
+                key={uploadKey}
+                accept=".pdf"
+                multiple={false}
+                maxFiles={1}
+                onFilesChange={setFiles}
+              />
 
               {files.length > 0 && (
-                <div ref={previewRef} className="mt-8 space-y-6">
+                <div ref={previewRef} className="mt-8 space-y-4">
                   <div className="rounded-xl border border-border bg-card p-6">
-                    <h3 className="font-semibold mb-2">Great for reports</h3>
+                    <h3 className="font-semibold mb-2">Page organization</h3>
                     <p className="text-sm text-muted-foreground">
-                      Use this when you want to freeze the layout of dashboards or summary sheets before sending them.
+                      Full visual page reordering (with thumbnails, drag-and-drop, add/delete) will be implemented in a later
+                      phase. For now, this tool runs as a stub endpoint so you can wire the UX and backend.
                     </p>
                   </div>
 
                   <div className="flex flex-col items-center gap-4">
                     <Button
                       size="lg"
-                      className="btn-hero gradient-secondary"
+                      className="btn-hero gradient-primary shadow-primary"
                       onClick={handleProcess}
                       disabled={isProcessing || !allReady}
                     >
-                      Convert Excel to PDF
+                      Organize PDF
                       <ArrowRight className="h-5 w-5" />
                     </Button>
                     <Button variant="ghost" onClick={handleReset}>
@@ -169,23 +167,23 @@ export default function ExcelToPDF() {
           )
         ) : (
           <div className="text-center py-12">
-            <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-secondary/10">
-              <FileSpreadsheet className="h-10 w-10 text-secondary" />
+            <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-primary/10">
+              <PanelsTopLeft className="h-10 w-10 text-primary" />
             </div>
-            <h2 className="text-2xl font-bold mb-2">Conversion Complete!</h2>
+            <h2 className="text-2xl font-bold mb-2">Organization Complete!</h2>
             <p className="text-muted-foreground mb-8">
-              Your Excel file has been converted to PDF.
+              Your PDF has been processed by the Organize tool stub. Advanced page operations will be added later.
             </p>
             <div className="flex flex-col items-center gap-4">
               <Button
                 size="lg"
-                className="btn-hero gradient-secondary"
+                className="btn-hero gradient-primary shadow-primary"
                 onClick={() => {
                   if (!downloadUrl) return;
                   const link = document.createElement("a");
                   link.href = downloadUrl;
-                  const baseName = (files[0]?.name || "spreadsheet").replace(/\.(xlsx?|XLSX?)$/, "");
-                  link.download = `${baseName}.pdf`;
+                  const baseName = (files[0]?.name || "document").replace(/\.pdf$/i, "");
+                  link.download = `${baseName}-organized.pdf`;
                   document.body.appendChild(link);
                   link.click();
                   document.body.removeChild(link);
@@ -193,10 +191,10 @@ export default function ExcelToPDF() {
                 disabled={!downloadUrl}
               >
                 <Download className="h-5 w-5 mr-2" />
-                Download PDF
+                Download Organized PDF
               </Button>
               <Button variant="outline" onClick={handleReset}>
-                Convert more spreadsheets
+                Organize another PDF
               </Button>
             </div>
           </div>
