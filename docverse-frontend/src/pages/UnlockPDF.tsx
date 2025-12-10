@@ -16,6 +16,7 @@ export default function UnlockPDF() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [uploadKey, setUploadKey] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [isEncrypted, setIsEncrypted] = useState<boolean | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const uploadRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
@@ -27,6 +28,7 @@ export default function UnlockPDF() {
     const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
     if (!allReady || !activeFile || !password) return;
+    if (isEncrypted === false) return;
 
     setIsProcessing(true);
     setIsComplete(false);
@@ -37,12 +39,13 @@ export default function UnlockPDF() {
     formData.append("file", activeFile, activeFile.name ?? "document.pdf");
     formData.append("password", password);
 
+    let handledError = false;
     try {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
 
         xhr.open("POST", `${apiBase}/unlock-pdf`);
-        xhr.responseType = "blob";
+        xhr.responseType = "arraybuffer";
 
         const interval = window.setInterval(() => {
           setProgress((prev) => {
@@ -56,27 +59,47 @@ export default function UnlockPDF() {
           window.clearInterval(interval);
 
           if (xhr.status >= 200 && xhr.status < 300) {
-            const blob = xhr.response as Blob;
+            const buffer = xhr.response as ArrayBuffer;
+            const blob = new Blob([buffer], { type: "application/pdf" });
             const url = URL.createObjectURL(blob);
             setDownloadUrl(url);
             setProgress(100);
             setIsComplete(true);
             resolve();
           } else {
+            try {
+              const buffer = xhr.response as ArrayBuffer;
+              const text = new TextDecoder().decode(buffer);
+              const data = JSON.parse(text);
+              setError(
+                data.message ||
+                  "Could not unlock this PDF. Please verify the password or file and try again."
+              );
+            } catch {
+              setError(
+                "Could not unlock this PDF. Please verify the password or file and try again."
+              );
+            }
+            handledError = true;
             reject(new Error(`Request failed with status ${xhr.status}`));
           }
         };
 
         xhr.onerror = () => {
           window.clearInterval(interval);
+          handledError = true;
           reject(new Error("Network error while uploading file"));
         };
 
         xhr.send(formData);
       });
     } catch (err) {
-      console.error("Error unlocking PDF", err);
-      setError("Something went wrong while unlocking your PDF. Please check the password and try again.");
+      if (!handledError) {
+        console.error("Error unlocking PDF", err);
+        setError(
+          "Something went wrong while unlocking your PDF. Please check the password and try again."
+        );
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -87,6 +110,7 @@ export default function UnlockPDF() {
     setPassword("");
     setIsComplete(false);
     setError(null);
+    setIsEncrypted(null);
     if (downloadUrl) {
       URL.revokeObjectURL(downloadUrl);
       setDownloadUrl(null);
@@ -97,10 +121,57 @@ export default function UnlockPDF() {
   };
 
   useEffect(() => {
-    if (files.length > 0 && previewRef.current) {
-      previewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+
+    if (files.length === 0) {
+      setIsEncrypted(null);
+      return;
     }
-  }, [files.length]);
+
+    const first = files[0]?.file as File | undefined;
+    if (!first) return;
+
+    if (uploadRef.current) {
+      const rect = uploadRef.current.getBoundingClientRect();
+      const offset = window.scrollY + rect.top + 270;
+      window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+    }
+
+    const checkEncryption = async () => {
+      try {
+        const formData = new FormData();
+        formData.append("file", first, first.name ?? "document.pdf");
+
+        const res = await fetch(`${apiBase}/pdf-encryption-status`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) {
+          console.error("Failed to check encryption status", await res.text());
+          return;
+        }
+
+        const data = await res.json();
+        if (!data.encrypted) {
+          setIsEncrypted(false);
+          setError("This PDF is not password-protected and does not need unlocking.");
+        } else {
+          setIsEncrypted(true);
+          // Clear stale not-protected error, if any
+          setError((prev) =>
+            prev === "This PDF is not password-protected and does not need unlocking."
+              ? null
+              : prev
+          );
+        }
+      } catch (err) {
+        console.error("Error checking encryption status (unlock)", err);
+      }
+    };
+
+    checkEncryption();
+  }, [files]);
 
   useEffect(() => {
     if (isProcessing && !isComplete && loadingRef.current) {
@@ -135,12 +206,17 @@ export default function UnlockPDF() {
             </div>
           ) : (
             <>
+              {error && (
+                <p className="mb-4 text-sm text-destructive text-center max-w-md mx-auto">{error}</p>
+              )}
+
               <div ref={uploadRef}>
                 <FileUploadZone
                   key={uploadKey}
                   accept=".pdf"
                   multiple={false}
                   maxFiles={1}
+                  showThumbnails={false}
                   onFilesChange={setFiles}
                 />
               </div>
@@ -180,7 +256,7 @@ export default function UnlockPDF() {
                       size="lg"
                       className="btn-hero gradient-secondary"
                       onClick={handleProcess}
-                      disabled={isProcessing || !allReady || !password}
+                      disabled={isProcessing || !allReady || !password || isEncrypted === false}
                     >
                       Unlock PDF
                       <ArrowRight className="h-5 w-5" />

@@ -58,8 +58,16 @@ export function PdfThumbnail({ file, width = 220, height = 280 }: PdfThumbnailPr
 
   if (error) {
     return (
-      <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-        Preview not available
+      <div className="flex h-full w-full items-center justify-center">
+        <div className="rounded-2xl bg-[#081421] px-4 py-5 flex items-center justify-center">
+          <div className="relative h-16 w-12 rounded-lg border-[3px] border-[#00D8FF] text-[#00D8FF] flex items-center justify-center">
+            <div className="w-7 space-y-2">
+              <div className="h-0.5 rounded bg-[#00D8FF]" />
+              <div className="h-0.5 rounded bg-[#00D8FF]" />
+              <div className="h-0.5 rounded bg-[#00D8FF]" />
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

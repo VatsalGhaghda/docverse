@@ -20,6 +20,7 @@ interface FileUploadZoneProps {
   maxFiles?: number;
   onFilesChange?: (files: UploadedFile[]) => void;
   className?: string;
+  showThumbnails?: boolean;
 }
 
 export function FileUploadZone({
@@ -28,6 +29,7 @@ export function FileUploadZone({
   maxFiles = 20,
   onFilesChange,
   className,
+  showThumbnails = true,
 }: FileUploadZoneProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -262,8 +264,8 @@ export function FileUploadZone({
                   <X className="h-3 w-3" />
                 </button>
 
-                <div className="flex-1 rounded-lg bg-muted/60 flex items-center justify-center mb-2 overflow-hidden">
-                  {file.file && file.file.type === "application/pdf" ? (
+                <div className="flex-1 rounded-lg bg-muted/60 flex items-center justify-center mb-2 overflow-hidden max-w-[200px] mx-auto">
+                  {showThumbnails && file.file && file.file.type === "application/pdf" ? (
                     <PdfThumbnail file={file.file} />
                   ) : (
                     <FileText className="h-10 w-10 text-primary" />

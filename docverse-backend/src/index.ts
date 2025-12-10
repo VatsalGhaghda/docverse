@@ -4,9 +4,15 @@ import helmet from "helmet";
 import multer from "multer";
 import { PDFDocument } from "pdf-lib";
 import JSZip from "jszip";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const execFileAsync = promisify(execFile);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -847,18 +853,74 @@ app.post("/protect-pdf", upload.single("file"), async (req: Request, res: Respon
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const protectedName = `${base}-protected.pdf`;
 
-    // Stub: just echo the original PDF bytes with a new filename.
-    // Real encryption/password protection will be implemented in a later phase.
-    res
-      .status(200)
-      .contentType("application/pdf")
-      .setHeader("Content-Disposition", `attachment; filename=${protectedName}`)
-      .send(file.buffer);
+    const qpdfPath = process.env.QPDF_PATH || "qpdf";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "docverse-protect-"));
+    const inputPath = path.join(tmpDir, "input.pdf");
+    const outputPath = path.join(tmpDir, "output.pdf");
+
+    fs.writeFileSync(inputPath, file.buffer);
+
+    try {
+      // First, detect if the PDF is already encrypted.
+      try {
+        const { stdout, stderr } = await execFileAsync(qpdfPath, [
+          "--warning-exit-0",
+          "--show-encryption",
+          inputPath,
+        ]);
+        const showEncOut = stdout?.toString() || "";
+        console.log("qpdf --show-encryption (protect) stdout:\n", showEncOut);
+        if (stderr) {
+          console.log("qpdf --show-encryption (protect) stderr:\n", stderr.toString());
+        }
+        // Newer qpdf prints "File is not encrypted" for unprotected PDFs. Treat anything
+        // that does NOT contain "not encrypted" (case-insensitive) as already protected.
+        if (!showEncOut.toLowerCase().includes("not encrypted")) {
+          return res.status(400).json({
+            status: "error",
+            code: "already_protected",
+            message: "This PDF is already password-protected. Use Unlock PDF instead.",
+          });
+        }
+      } catch {
+        // If show-encryption fails unexpectedly, fall through to generic error below.
+      }
+
+      // Basic encryption: user password only, 256-bit AES. Owner password = user password for now.
+      // Use --warning-exit-0 so that qpdf exits with code 0 even if there are non-fatal warnings.
+      const args = [
+        "--warning-exit-0",
+        "--encrypt",
+        password,
+        password,
+        "256",
+        "--",
+        inputPath,
+        outputPath,
+      ];
+
+      await execFileAsync(qpdfPath, args);
+
+      const protectedBuffer = fs.readFileSync(outputPath);
+
+      res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("Content-Disposition", `attachment; filename=${protectedName}`)
+        .send(protectedBuffer);
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
   } catch (error) {
     console.error("Error protecting PDF", error);
     res.status(500).json({
       status: "error",
-      message: "Failed to protect PDF. Please try again.",
+      message:
+        "Failed to protect PDF. Please ensure qpdf is installed on the server and try again.",
     });
   }
 });
@@ -894,18 +956,159 @@ app.post("/unlock-pdf", upload.single("file"), async (req: Request, res: Respons
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const unlockedName = `${base}-unlocked.pdf`;
 
-    // Stub: echo original bytes with a new filename.
-    // Real unlocking will be implemented later using a proper PDF encryption library.
-    res
-      .status(200)
-      .contentType("application/pdf")
-      .setHeader("Content-Disposition", `attachment; filename=${unlockedName}`)
-      .send(file.buffer);
+    const qpdfPath = process.env.QPDF_PATH || "qpdf";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "docverse-unlock-"));
+    const inputPath = path.join(tmpDir, "input.pdf");
+    const outputPath = path.join(tmpDir, "output.pdf");
+
+    fs.writeFileSync(inputPath, file.buffer);
+
+    try {
+      // Check whether the PDF is actually encrypted.
+      try {
+        const { stdout, stderr } = await execFileAsync(qpdfPath, [
+          "--warning-exit-0",
+          "--show-encryption",
+          inputPath,
+        ]);
+        const showEncOut = stdout?.toString() || "";
+        console.log("qpdf --show-encryption (unlock) stdout:\n", showEncOut);
+        if (stderr) {
+          console.log("qpdf --show-encryption (unlock) stderr:\n", stderr.toString());
+        }
+        // If qpdf reports "File is not encrypted", we can safely skip unlocking.
+        if (showEncOut.toLowerCase().includes("not encrypted")) {
+          return res.status(400).json({
+            status: "error",
+            code: "not_protected",
+            message: "This PDF is not password-protected and does not need unlocking.",
+          });
+        }
+      } catch {
+        // If show-encryption fails unexpectedly, we'll let the decrypt attempt handle it.
+      }
+
+      // Use --warning-exit-0 so that qpdf exits with code 0 even if there are non-fatal warnings
+      // while decrypting, and we don't incorrectly treat them as password failures.
+      // qpdf expects --password to be passed as --password=password (single argument).
+      const args = [
+        "--warning-exit-0",
+        `--password=${password}`,
+        "--decrypt",
+        inputPath,
+        outputPath,
+      ];
+
+      console.log("qpdf decrypt (unlock) args (redacted password)", {
+        qpdfPath,
+        inputPath,
+        outputPath,
+      });
+
+      try {
+        await execFileAsync(qpdfPath, args);
+        console.log("qpdf decrypt (unlock) succeeded for", inputPath);
+      } catch (err) {
+        console.error("qpdf decrypt (unlock) failed", err);
+        return res.status(401).json({
+          status: "error",
+          code: "incorrect_password",
+          message: "The password you entered is incorrect for this PDF.",
+        });
+      }
+
+      const unlockedBuffer = fs.readFileSync(outputPath);
+
+      res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("Content-Disposition", `attachment; filename=${unlockedName}`)
+        .send(unlockedBuffer);
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
   } catch (error) {
     console.error("Error unlocking PDF", error);
     res.status(500).json({
       status: "error",
-      message: "Failed to unlock PDF. Please try again.",
+      message:
+        "Failed to unlock PDF. Please ensure qpdf is installed on the server and try again.",
+    });
+  }
+});
+
+app.post("/pdf-encryption-status", upload.single("file"), async (req: Request, res: Response) => {
+  try {
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!file) {
+      return res.status(400).json({
+        status: "error",
+        message: "Please upload a PDF file to check encryption status.",
+      });
+    }
+
+    if (file.size > 100 * 1024 * 1024) {
+      return res.status(413).json({
+        status: "error",
+        message: "Uploaded file exceeds 100MB limit.",
+      });
+    }
+
+    const qpdfPath = process.env.QPDF_PATH || "qpdf";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "docverse-status-"));
+    const inputPath = path.join(tmpDir, "input.pdf");
+
+    fs.writeFileSync(inputPath, file.buffer);
+
+    try {
+      const { stdout } = await execFileAsync(qpdfPath, [
+        "--warning-exit-0",
+        "--show-encryption",
+        inputPath,
+      ]);
+
+      const showEncOut = stdout?.toString() || "";
+      const encrypted = !showEncOut.toLowerCase().includes("not encrypted");
+
+      return res.status(200).json({
+        status: "ok",
+        encrypted,
+      });
+    } catch (err: any) {
+      const stderr = (err?.stderr || "").toString().toLowerCase();
+
+      // If qpdf reports an invalid password for show-encryption, we still know the
+      // file is encrypted; just report encrypted=true without treating it as an error.
+      if (stderr.includes("invalid password")) {
+        return res.status(200).json({
+          status: "ok",
+          encrypted: true,
+        });
+      }
+
+      console.error("Error checking PDF encryption status", err);
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to check PDF encryption status. Please ensure qpdf is installed on the server and try again.",
+      });
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  } catch (error) {
+    console.error("Error in /pdf-encryption-status", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to check PDF encryption status. Please try again.",
     });
   }
 });
