@@ -17,7 +17,7 @@ const colorClasses = {
 
 export function ToolCard({ title, description, icon: Icon, href, color }: ToolCardProps) {
   return (
-    <Link to={href} className="group tool-card block">
+    <Link to={href} className="group tool-card block h-full">
       <div className={`mb-4 inline-flex h-14 w-14 items-center justify-center rounded-xl transition-all duration-300 ${colorClasses[color]}`}>
         <Icon className="h-7 w-7" />
       </div>

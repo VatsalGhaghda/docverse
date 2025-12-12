@@ -222,3 +222,53 @@
 
 5. **Wire frontend to backend (later)**
    - When API routes are defined, configure the frontend to call the Render URL via environment variables (e.g. `VITE_API_BASE_URL`).
+
+## Current Implementation Notes: Protect / Unlock PDF
+
+### Backend (docverse-backend)
+- **Endpoints implemented**:
+  - `POST /protect-pdf` – protects a single PDF with a password using **qpdf**.
+  - `POST /unlock-pdf` – unlocks a password-protected PDF given the correct password.
+  - `POST /pdf-encryption-status` – lightweight check to see if an uploaded PDF is encrypted.
+- **qpdf integration**:
+  - Using `qpdf --warning-exit-0 --show-encryption input.pdf` to detect encryption state.
+  - Treats output containing `"not encrypted"` (case-insensitive) as **not protected**.
+  - Protect uses `qpdf --warning-exit-0 --encrypt <pwd> <pwd> 256 -- input.pdf output.pdf`.
+  - Unlock uses `qpdf --warning-exit-0 --password=<pwd> --decrypt input.pdf output.pdf`.
+  - Handles qpdf "operation succeeded with warnings" via `--warning-exit-0`.
+- **Error semantics**:
+  - Protect:
+    - `400` + `code: "already_protected"` when input is already encrypted.
+  - Unlock:
+    - `400` + `code: "not_protected"` when input is not encrypted.
+    - `401` + `code: "incorrect_password"` when qpdf decrypt fails.
+- **Dockerfile (backend)**:
+  - Based on `node:18-bullseye-slim`.
+  - Installs qpdf via `apt-get install -y qpdf`.
+  - Builds with `npm run build` and starts with `npm start` on port `4000`.
+
+### Frontend (docverse-frontend)
+- **Tools implemented**:
+  - Protect PDF page
+  - Unlock PDF page
+- **Key UX behavior**:
+  - File uploads use shared `FileUploadZone` with generic PDF icon preview.
+  - Immediate validation on upload via `/pdf-encryption-status`:
+    - Protect: shows red message and disables button for already-protected PDFs.
+    - Unlock: shows red message and disables button for unprotected PDFs.
+  - Clear error messages for incorrect password, already-protected, and not-protected cases.
+  - Password + confirm-password fields with visibility toggles.
+  - Smooth scrolling to the file card area after upload (with page offset).
+- **API base URL**:
+  - Configured via `VITE_API_BASE_URL` (e.g. `https://<render-backend-url>` in production).
+
+### Deployment (Protect / Unlock PDF)
+- **Backend on Render (Docker)**:
+  - Render Web Service uses `docverse-backend/Dockerfile` as the runtime.
+  - No explicit build/start commands required in Render; Dockerfile controls the build.
+  - qpdf is installed inside the image; `QPDF_PATH` env var is optional (defaults to `"qpdf"`).
+- **Frontend on Vercel**:
+  - Vercel project root: `docverse-frontend`.
+  - Environment variable `VITE_API_BASE_URL` points to the Render backend URL.
+  - Frontend calls backend routes (`/protect-pdf`, `/unlock-pdf`, `/pdf-encryption-status`) through this base URL.
+

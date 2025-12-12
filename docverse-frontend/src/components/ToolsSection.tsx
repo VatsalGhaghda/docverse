@@ -15,6 +15,7 @@ import {
   ListOrdered,
   PanelsTopLeft,
   Image as ImageIcon,
+  Droplets,
 } from "lucide-react";
 import { ToolCard } from "./ToolCard";
 
@@ -144,6 +145,13 @@ const tools = [
     icon: PanelsTopLeft,
     href: "/organize",
     color: "primary" as const,
+  },
+  {
+    title: "Watermark PDF",
+    description: "Add text or image watermarks to your pages.",
+    icon: Droplets,
+    href: "/watermark",
+    color: "secondary" as const,
   },
 ];
 

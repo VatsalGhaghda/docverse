@@ -18,15 +18,18 @@ const tools = [
   { name: "PDF to Excel", href: "/pdf-to-excel", icon: "📊" },
   { name: "PDF to PowerPoint", href: "/pdf-to-powerpoint", icon: "📽️" },
   { name: "PDF to HTML", href: "/pdf-to-html", icon: "🌐" },
+  { name: "Image to PDF", href: "/image-to-pdf", icon: "🖼️" },
+  { name: "PDF to Image", href: "/pdf-to-image", icon: "🖼️" },
+  { name: "OCR", href: "/ocr", icon: "👁️" },
+  { name: "Add Page Numbers", href: "/page-numbers", icon: "🔢" },
   { name: "Organize PDF", href: "/organize", icon: "🧩" },
+  { name: "Watermark PDF", href: "/watermark", icon: "💧" },
+  { name: "Protect PDF", href: "/protect", icon: "🔐" },
+  { name: "Unlock PDF", href: "/unlock", icon: "🔓" },
+  { name: "Sign PDF", href: "/sign", icon: "✍️" },
   { name: "Word to PDF", href: "/word-to-pdf", icon: "📝" },
   { name: "Excel to PDF", href: "/excel-to-pdf", icon: "📈" },
   { name: "PPT to PDF", href: "/powerpoint-to-pdf", icon: "📊" },
-  { name: "Image to PDF", href: "/image-to-pdf", icon: "🖼️" },
-  { name: "OCR", href: "/ocr", icon: "👁️" },
-  { name: "Page Numbers", href: "/page-numbers", icon: "🔢" },
-  { name: "Watermark", href: "/watermark", icon: "💧" },
-  { name: "Unlock PDF", href: "/unlock", icon: "🔓" },
 ];
 
 export function Navbar() {

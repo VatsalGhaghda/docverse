@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import multer from "multer";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb, degrees } from "pdf-lib";
 import JSZip from "jszip";
 import fs from "fs";
 import os from "os";
@@ -233,11 +233,79 @@ app.post("/compress-pdf", upload.array("files", 10), async (req: Request, res: R
       });
     }
 
-    // If only a single file is uploaded, return a single compressed PDF instead of a ZIP
+    // Map a numeric quality (10–100) to Ghostscript PDFSETTINGS presets.
+    const rawQuality = parseInt((req.body.quality as string) || "70", 10);
+    const clampedQuality = isNaN(rawQuality) ? 70 : Math.min(100, Math.max(10, rawQuality));
+
+    const mapQualityToPdfSettings = (q: number): { preset: string; dpi: number } => {
+      if (q >= 75) {
+        // Higher quality: light compression
+        return { preset: "/prepress", dpi: 180 };
+      }
+      if (q >= 45) {
+        // Recommended / balanced
+        return { preset: "/ebook", dpi: 110 };
+      }
+      // Extreme compression: very strong downsampling
+      return { preset: "/screen", dpi: 50 };
+    };
+
+    const { preset: pdfSettings, dpi } = mapQualityToPdfSettings(clampedQuality);
+
+    const isWindows = process.platform === "win32";
+    const gsPath = process.env.GS_PATH || (isWindows ? "gswin64c" : "gs");
+
+    // Helper to compress a single PDF buffer with Ghostscript.
+    const compressWithGhostscript = async (inputBuffer: Buffer): Promise<Buffer> => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "docverse-compress-"));
+      const inputPath = path.join(tmpDir, "input.pdf");
+      const outputPath = path.join(tmpDir, "output.pdf");
+
+      fs.writeFileSync(inputPath, inputBuffer);
+
+      try {
+        const args = [
+          "-sDEVICE=pdfwrite",
+          "-dCompatibilityLevel=1.4",
+          `-dPDFSETTINGS=${pdfSettings}`,
+          // Image downsampling tuned by effective DPI derived from quality slider
+          "-dDownsampleColorImages=true",
+          "-dColorImageDownsampleType=/Bicubic",
+          `-dColorImageResolution=${dpi}`,
+          "-dDownsampleGrayImages=true",
+          "-dGrayImageDownsampleType=/Bicubic",
+          `-dGrayImageResolution=${dpi}`,
+          "-dDownsampleMonoImages=true",
+          "-dMonoImageDownsampleType=/Subsample",
+          `-dMonoImageResolution=${dpi}`,
+          "-dNOPAUSE",
+          "-dQUIET",
+          "-dBATCH",
+          `-sOutputFile=${outputPath}`,
+          inputPath,
+        ];
+
+        await execFileAsync(gsPath, args);
+
+        const compressed = fs.readFileSync(outputPath);
+        return compressed;
+      } finally {
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    };
+
+    // If only a single file is uploaded, return a single compressed PDF instead of a ZIP.
+    // If Ghostscript does not actually reduce size, fall back to the original bytes so the
+    // file is never larger than the input.
     if (files.length === 1) {
       const file = files[0];
-      const pdf = await PDFDocument.load(file.buffer);
-      const compressedBytes = await pdf.save({ useObjectStreams: true });
+      const compressedBytes = await compressWithGhostscript(file.buffer);
+      const chosenBytes =
+        compressedBytes.length >= file.buffer.length ? file.buffer : compressedBytes;
 
       const originalName = file.originalname || "document.pdf";
       const dotIndex = originalName.lastIndexOf(".");
@@ -248,22 +316,24 @@ app.post("/compress-pdf", upload.array("files", 10), async (req: Request, res: R
         .status(200)
         .contentType("application/pdf")
         .setHeader("Content-Disposition", `attachment; filename=${compressedName}`)
-        .send(Buffer.from(compressedBytes));
+        .send(Buffer.from(chosenBytes));
     }
 
-    // Multiple files: compress each and return a ZIP archive
+    // Multiple files: compress each and return a ZIP archive. For each file, if
+    // Ghostscript does not reduce size, fall back to the original bytes.
     const zip = new JSZip();
 
     for (const file of files) {
-      const pdf = await PDFDocument.load(file.buffer);
-      const compressedBytes = await pdf.save({ useObjectStreams: true });
+      const compressedBytes = await compressWithGhostscript(file.buffer);
+      const chosenBytes =
+        compressedBytes.length >= file.buffer.length ? file.buffer : compressedBytes;
 
       const originalName = file.originalname || "document.pdf";
       const dotIndex = originalName.lastIndexOf(".");
       const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
       const compressedName = `${base}-compressed.pdf`;
 
-      zip.file(compressedName, compressedBytes);
+      zip.file(compressedName, chosenBytes);
     }
 
     const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
@@ -277,7 +347,8 @@ app.post("/compress-pdf", upload.array("files", 10), async (req: Request, res: R
     console.error("Error compressing PDFs", error);
     res.status(500).json({
       status: "error",
-      message: "Failed to compress PDFs. Please try again.",
+      message:
+        "Failed to compress PDFs. Please ensure Ghostscript is installed on the server and try again.",
     });
   }
 });
@@ -689,13 +760,279 @@ app.post("/add-page-numbers", upload.single("file"), async (req: Request, res: R
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const numberedName = `${base}-numbered.pdf`;
 
-    // Stub: for now, simply return the original bytes with a new filename.
-    // Later, real page-number drawing will be implemented using a PDF library.
+    // Options from frontend
+    const format = (req.body.format as string) || "1";
+    const template = (req.body.template as string) || "number";
+    const pageMode = (req.body.pageMode as "single" | "facing") || "single";
+    const coverIsFirstPage = req.body.coverIsFirstPage === "true";
+    const startAtRaw = parseInt((req.body.startAt as string) || "1", 10);
+    const startAt = Number.isNaN(startAtRaw) || startAtRaw < 1 ? 1 : startAtRaw;
+    const range = ((req.body.range as string) || "").trim();
+    const position = (req.body.position as string) || "bottom-center";
+    const fontSizeRaw = parseInt((req.body.fontSize as string) || "12", 10);
+    const fontSize = Number.isNaN(fontSizeRaw) ? 12 : Math.min(48, Math.max(6, fontSizeRaw));
+    const marginRaw = parseInt((req.body.margin as string) || "24", 10);
+    const margin = Number.isNaN(marginRaw) ? 24 : Math.min(200, Math.max(4, marginRaw));
+    const colorRaw = (req.body.color as string) || "#000000";
+    const fontFamilyRaw = (req.body.fontFamily as string) || "helvetica";
+    const bold = req.body.bold === "true";
+    const italic = req.body.italic === "true";
+    const underline = req.body.underline === "true";
+
+    // Load PDF
+    const pdfDoc = await PDFDocument.load(file.buffer);
+    const pages = pdfDoc.getPages();
+    const totalPages = pages.length;
+
+    // Helper: parse range string like "1-3,5,8-10" into a Set of 1-based page numbers
+    const defaultStartPage = coverIsFirstPage && pageMode === "facing" ? 2 : 1;
+
+    const parseRanges = (input: string, maxPage: number): Set<number> => {
+      const result = new Set<number>();
+      if (!input) {
+        for (let i = defaultStartPage; i <= maxPage; i++) result.add(i);
+        return result;
+      }
+
+      const parts = input.split(",");
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const dashIndex = trimmed.indexOf("-");
+        if (dashIndex === -1) {
+          const n = parseInt(trimmed, 10);
+          if (!Number.isNaN(n) && n >= 1 && n <= maxPage) result.add(n);
+        } else {
+          const startStr = trimmed.slice(0, dashIndex).trim();
+          const endStr = trimmed.slice(dashIndex + 1).trim();
+          const start = parseInt(startStr, 10);
+          const end = parseInt(endStr, 10);
+          if (Number.isNaN(start) || Number.isNaN(end)) continue;
+          const from = Math.max(1, Math.min(start, end));
+          const to = Math.min(maxPage, Math.max(start, end));
+          for (let i = from; i <= to; i++) {
+            result.add(i);
+          }
+        }
+      }
+
+      // If nothing valid parsed, default to all pages
+      if (result.size === 0) {
+        for (let i = defaultStartPage; i <= maxPage; i++) result.add(i);
+      }
+
+      return result;
+    };
+
+    const pagesToNumber = parseRanges(range, totalPages);
+    const sortedPagesToNumber = Array.from(pagesToNumber).sort((a, b) => a - b);
+    const totalLogicalPages = sortedPagesToNumber.length;
+
+    // Helpers to format numbers
+    const toRoman = (num: number, uppercase: boolean): string => {
+      if (num <= 0) return "";
+      const romans: [number, string][] = [
+        [1000, "M"],
+        [900, "CM"],
+        [500, "D"],
+        [400, "CD"],
+        [100, "C"],
+        [90, "XC"],
+        [50, "L"],
+        [40, "XL"],
+        [10, "X"],
+        [9, "IX"],
+        [5, "V"],
+        [4, "IV"],
+        [1, "I"],
+      ];
+      let n = num;
+      let result = "";
+      for (const [value, symbol] of romans) {
+        while (n >= value) {
+          result += symbol;
+          n -= value;
+        }
+      }
+      return uppercase ? result : result.toLowerCase();
+    };
+
+    const formatNumber = (n: number): string => {
+      switch (format) {
+        case "01":
+          return n.toString().padStart(2, "0");
+        case "i":
+          return toRoman(n, false);
+        case "I":
+          return toRoman(n, true);
+        case "1":
+        default:
+          return n.toString();
+      }
+    };
+
+    const parseColor = (hex: string): { r: number; g: number; b: number } => {
+      const match = /^#?([0-9a-fA-F]{6})$/.exec(hex);
+      if (!match) {
+        return { r: 0, g: 0, b: 0 };
+      }
+      const intVal = parseInt(match[1], 16);
+      const r = ((intVal >> 16) & 0xff) / 255;
+      const g = ((intVal >> 8) & 0xff) / 255;
+      const b = (intVal & 0xff) / 255;
+      return { r, g, b };
+    };
+
+    const { r, g, b } = parseColor(colorRaw);
+
+    type FontFamily = "helvetica" | "times" | "courier";
+    const fontFamily = (fontFamilyRaw.toLowerCase() as FontFamily) || "helvetica";
+
+    const resolveStandardFont = () => {
+      switch (fontFamily) {
+        case "times":
+          if (bold && italic) return StandardFonts.TimesRomanBoldItalic;
+          if (bold) return StandardFonts.TimesRomanBold;
+          if (italic) return StandardFonts.TimesRomanItalic;
+          return StandardFonts.TimesRoman;
+        case "courier":
+          if (bold && italic) return StandardFonts.CourierBoldOblique;
+          if (bold) return StandardFonts.CourierBold;
+          if (italic) return StandardFonts.CourierOblique;
+          return StandardFonts.Courier;
+        case "helvetica":
+        default:
+          if (bold && italic) return StandardFonts.HelveticaBoldOblique;
+          if (bold) return StandardFonts.HelveticaBold;
+          if (italic) return StandardFonts.HelveticaOblique;
+          return StandardFonts.Helvetica;
+      }
+    };
+
+    const font = await pdfDoc.embedFont(resolveStandardFont());
+
+    // Draw numbers on selected pages
+    for (let index = 0; index < totalPages; index++) {
+      const pageNumber = index + 1; // 1-based
+      if (!pagesToNumber.has(pageNumber)) continue;
+
+      const logicalIndex = sortedPagesToNumber.indexOf(pageNumber);
+      const logicalNumber = startAt + logicalIndex;
+      const baseNumberText = formatNumber(logicalNumber);
+
+      let text: string;
+      switch (template) {
+        case "page_n":
+          text = `Page ${baseNumberText}`;
+          break;
+        case "page_n_of_total": {
+          const totalText = formatNumber(startAt + totalLogicalPages - 1);
+          text = `Page ${baseNumberText} of ${totalText}`;
+          break;
+        }
+        case "number":
+        default:
+          text = baseNumberText;
+          break;
+      }
+
+      const page = pages[index];
+      const { width, height } = page.getSize();
+      const textWidth = font.widthOfTextAtSize(text, fontSize);
+      const textHeight = fontSize;
+
+      let x = margin;
+      let y = margin;
+
+      const bottomY = margin;
+      const topY = height - margin - textHeight;
+
+      // For facing pages, mirror left/right positions across the spread.
+      // "left" means outer edges, "right" means inner edges. Center stays centered.
+      let effectivePosition = position;
+      if (pageMode === "facing") {
+        const isCoverPage = coverIsFirstPage && pageNumber === 1;
+        if (!isCoverPage) {
+          // Determine if this physical page is the left or right page in its spread.
+          // With a cover: spreads start at page 2 (even = left, odd = right).
+          // Without a cover: spreads start at page 1 (odd = left, even = right).
+          const isLeftPageInSpread = coverIsFirstPage ? pageNumber % 2 === 0 : pageNumber % 2 === 1;
+
+          const [vertical, horizontal] = position.split("-") as [
+            "top" | "bottom",
+            "left" | "center" | "right"
+          ];
+
+          let effHorizontal: "left" | "center" | "right" = horizontal;
+          if (horizontal !== "center") {
+            if (horizontal === "left") {
+              // "left" = outer: left page uses left, right page uses right
+              effHorizontal = isLeftPageInSpread ? "left" : "right";
+            } else {
+              // "right" = inner: left page uses right, right page uses left
+              effHorizontal = isLeftPageInSpread ? "right" : "left";
+            }
+          }
+
+          effectivePosition = `${vertical}-${effHorizontal}` as typeof position;
+        }
+      }
+
+      switch (effectivePosition) {
+        case "top-left":
+          x = margin;
+          y = topY;
+          break;
+        case "top-center":
+          x = (width - textWidth) / 2;
+          y = topY;
+          break;
+        case "top-right":
+          x = width - margin - textWidth;
+          y = topY;
+          break;
+        case "bottom-left":
+          x = margin;
+          y = bottomY;
+          break;
+        case "bottom-center":
+          x = (width - textWidth) / 2;
+          y = bottomY;
+          break;
+        case "bottom-right":
+        default:
+          x = width - margin - textWidth;
+          y = bottomY;
+          break;
+      }
+
+      page.drawText(text, {
+        x,
+        y,
+        size: fontSize,
+        font,
+        color: rgb(r, g, b),
+      });
+
+      if (underline) {
+        const underlineOffset = fontSize * 0.2;
+        const underlineY = y - underlineOffset;
+        page.drawLine({
+          start: { x, y: underlineY },
+          end: { x: x + textWidth, y: underlineY },
+          thickness: Math.max(0.5, fontSize * 0.06),
+          color: rgb(r, g, b),
+        });
+      }
+    }
+
+    const numberedBytes = await pdfDoc.save();
+
     res
       .status(200)
       .contentType("application/pdf")
       .setHeader("Content-Disposition", `attachment; filename=${numberedName}`)
-      .send(file.buffer);
+      .send(Buffer.from(numberedBytes));
   } catch (error) {
     console.error("Error adding page numbers", error);
     res.status(500).json({
@@ -728,13 +1065,84 @@ app.post("/organize-pdf", upload.single("file"), async (req: Request, res: Respo
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const organizedName = `${base}-organized.pdf`;
 
-    // Stub: just return original bytes with an updated filename.
-    // Later, real page reordering/add/remove will be implemented.
+    // Parse pages payload from frontend
+    type IncomingPage = {
+      type: "page" | "blank";
+      originalIndex: number | null;
+      rotation: 0 | 90 | 180 | 270;
+    };
+
+    let pagesPayload: IncomingPage[] = [];
+    const rawPages = req.body.pages as string | undefined;
+    if (rawPages) {
+      try {
+        const parsed = JSON.parse(rawPages);
+        if (Array.isArray(parsed)) {
+          pagesPayload = parsed.filter((p) =>
+            p && (p.type === "page" || p.type === "blank") && typeof p.rotation === "number"
+          );
+        }
+      } catch (err) {
+        console.warn("Failed to parse pages payload for /organize-pdf", err);
+      }
+    }
+
+    if (pagesPayload.length === 0) {
+      // Fallback: just return original if no valid instructions
+      return res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("Content-Disposition", `attachment; filename=${organizedName}`)
+        .send(file.buffer);
+    }
+
+    const srcDoc = await PDFDocument.load(file.buffer);
+    const srcPages = srcDoc.getPages();
+
+    const outDoc = await PDFDocument.create();
+
+    // Use first page size as baseline for blank pages
+    const basePageSize = srcPages[0]?.getSize();
+
+    for (const item of pagesPayload) {
+      if (item.type === "page") {
+        if (
+          item.originalIndex == null ||
+          Number.isNaN(item.originalIndex) ||
+          item.originalIndex < 0 ||
+          item.originalIndex >= srcPages.length
+        ) {
+          continue;
+        }
+
+        const [copiedPage] = await outDoc.copyPages(srcDoc, [item.originalIndex]);
+
+        // Apply rotation if requested
+        if (item.rotation) {
+          copiedPage.setRotation(degrees(item.rotation));
+        }
+
+        outDoc.addPage(copiedPage);
+      } else if (item.type === "blank") {
+        // Insert a blank page using the same size as the first page if available
+        if (basePageSize) {
+          const blank = outDoc.addPage([basePageSize.width, basePageSize.height]);
+          if (item.rotation) {
+            blank.setRotation(degrees(item.rotation));
+          }
+        } else {
+          outDoc.addPage();
+        }
+      }
+    }
+
+    const organizedBytes = await outDoc.save();
+
     res
       .status(200)
       .contentType("application/pdf")
       .setHeader("Content-Disposition", `attachment; filename=${organizedName}`)
-      .send(file.buffer);
+      .send(Buffer.from(organizedBytes));
   } catch (error) {
     console.error("Error organizing PDF", error);
     res.status(500).json({
@@ -744,44 +1152,337 @@ app.post("/organize-pdf", upload.single("file"), async (req: Request, res: Respo
   }
 });
 
-app.post("/watermark-pdf", upload.single("file"), async (req: Request, res: Response) => {
-  try {
-    const file = req.file as Express.Multer.File | undefined;
+app.post(
+  "/watermark-pdf",
+  upload.fields([
+    { name: "file", maxCount: 1 },
+    { name: "watermarkImage", maxCount: 1 },
+  ]),
+  async (req: Request, res: Response) => {
+    try {
+      const files = req.files as {
+        [fieldname: string]: Express.Multer.File[];
+      };
 
-    if (!file) {
-      return res.status(400).json({
+      const file = files?.file?.[0];
+
+      if (!file) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please upload a PDF file to watermark.",
+        });
+      }
+
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
+
+      const originalName = file.originalname || "document.pdf";
+      const dotIndex = originalName.lastIndexOf(".");
+      const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
+      const watermarkedName = `${base}-watermarked.pdf`;
+
+      const body = req.body as {
+        mode?: string;
+        text?: string;
+        opacity?: string; // 0-100 from frontend (already inverted from transparency)
+        rotation?: string; // degrees
+        position?: string; // e.g. top-left, mid-center
+        rangeFrom?: string;
+        rangeTo?: string;
+        layer?: string; // over | under
+        fontSize?: string;
+        color?: string;
+        fontFamily?: string;
+        bold?: string;
+        italic?: string;
+        underline?: string;
+      };
+
+      const mode = body.mode === "image" ? "image" : "text";
+      const watermarkText = (body.text || "").trim();
+      const opacityPercent = Number.parseFloat(body.opacity || "100");
+      const opacity = Number.isFinite(opacityPercent)
+        ? Math.min(Math.max(opacityPercent / 100, 0), 1)
+        : 1;
+      const rotationDegrees = Number.parseFloat(body.rotation || "0");
+      const rotation = Number.isFinite(rotationDegrees) ? rotationDegrees : 0;
+      const positionKey = body.position || "mid-center";
+      const layer = body.layer === "under" ? "under" : "over";
+      const fontSizeRaw = body.fontSize || "32";
+      const sizeFromBody = Number.parseFloat(fontSizeRaw);
+      const effectiveFontSize = Number.isFinite(sizeFromBody) ? Math.max(8, Math.min(sizeFromBody, 96)) : 32;
+
+      const colorRaw = body.color || "#000000";
+      const fontFamilyRaw = body.fontFamily || "helvetica";
+      const bold = body.bold === "true";
+      const italic = body.italic === "true";
+      const underline = body.underline === "true";
+
+      const rangeFromNum = Number.parseInt(body.rangeFrom || "", 10);
+      const rangeToNum = Number.parseInt(body.rangeTo || "", 10);
+
+      const watermarkImageFile = files?.watermarkImage?.[0];
+
+      if (mode === "text" && !watermarkText) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please provide watermark text.",
+        });
+      }
+
+      if (mode === "image" && !watermarkImageFile) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please upload a watermark image.",
+        });
+      }
+
+      const srcDoc = await PDFDocument.load(file.buffer);
+      const srcPages = srcDoc.getPages();
+      const totalPages = srcPages.length;
+
+      // Determine page range (1-based, inclusive). If not provided, default to all pages.
+      let startPage = 1;
+      let endPage = totalPages;
+
+      if (!Number.isNaN(rangeFromNum)) {
+        startPage = Math.min(Math.max(rangeFromNum, 1), totalPages);
+      }
+      if (!Number.isNaN(rangeToNum)) {
+        endPage = Math.min(Math.max(rangeToNum, 1), totalPages);
+      }
+      if (startPage > endPage) {
+        [startPage, endPage] = [endPage, startPage];
+      }
+
+      const outDoc = await PDFDocument.create();
+
+      // Embed all source pages so we can control drawing order (layer over/under)
+      const embeddedPages = await outDoc.embedPages(srcPages);
+
+      // Prepare resources for watermark drawing
+      let textFont = undefined as undefined | any;
+      let imageEmbed: any | undefined;
+
+      if (mode === "text") {
+        type FontFamily = "helvetica" | "times" | "courier";
+        const fontFamily = (fontFamilyRaw.toLowerCase() as FontFamily) || "helvetica";
+
+        const resolveStandardFont = () => {
+          switch (fontFamily) {
+            case "times":
+              if (bold && italic) return StandardFonts.TimesRomanBoldItalic;
+              if (bold) return StandardFonts.TimesRomanBold;
+              if (italic) return StandardFonts.TimesRomanItalic;
+              return StandardFonts.TimesRoman;
+            case "courier":
+              if (bold && italic) return StandardFonts.CourierBoldOblique;
+              if (bold) return StandardFonts.CourierBold;
+              if (italic) return StandardFonts.CourierOblique;
+              return StandardFonts.Courier;
+            case "helvetica":
+            default:
+              if (bold && italic) return StandardFonts.HelveticaBoldOblique;
+              if (bold) return StandardFonts.HelveticaBold;
+              if (italic) return StandardFonts.HelveticaOblique;
+              return StandardFonts.Helvetica;
+          }
+        };
+
+        textFont = await outDoc.embedFont(resolveStandardFont());
+      } else if (mode === "image" && watermarkImageFile) {
+        const mime = watermarkImageFile.mimetype || "";
+        if (mime === "image/png") {
+          imageEmbed = await outDoc.embedPng(watermarkImageFile.buffer);
+        } else {
+          // Treat everything else as JPEG-compatible
+          imageEmbed = await outDoc.embedJpg(watermarkImageFile.buffer);
+        }
+      }
+
+      const drawWatermarkOnPage = (page: any, pageIndex: number, width: number, height: number) => {
+        const pageNumber1Based = pageIndex + 1;
+        if (pageNumber1Based < startPage || pageNumber1Based > endPage) {
+          return;
+        }
+
+        // Compute target coordinates based on 3x3 position grid.
+        // Use comfortable margins so watermark stays inside the page but can sit relatively close to edges.
+        // When rotation is non-zero we are still slightly more conservative.
+        const baseMarginFactor = rotation !== 0 ? 0.13 : 0.09;
+        const marginX = width * baseMarginFactor;
+        const marginY = height * baseMarginFactor;
+
+        const isTop = positionKey.startsWith("top-");
+        const isBottom = positionKey.startsWith("bottom-");
+        const isMid = positionKey.startsWith("mid-");
+
+        const isLeft = positionKey.endsWith("left");
+        const isRight = positionKey.endsWith("right");
+        const isCenter = positionKey.endsWith("center");
+
+        let x = width / 2;
+        let y = height / 2;
+
+        if (isLeft) x = marginX;
+        if (isRight) x = width - marginX;
+        if (isCenter) x = width / 2;
+
+        if (isTop) y = height - marginY;
+        if (isBottom) y = marginY;
+        if (isMid) y = height / 2;
+
+        if (mode === "text" && textFont) {
+          const fontSize = rotation !== 0 ? Math.max(8, effectiveFontSize - 2) : effectiveFontSize;
+          const textWidth = textFont.widthOfTextAtSize(watermarkText, fontSize);
+          const textHeight = textFont.heightAtSize(fontSize);
+
+          // Derive a target anchor point that takes current font size into account,
+          // so left/right/top/bottom positions sit close to the margins but remain inside.
+          let targetX = width / 2;
+          let targetY = height / 2;
+
+          if (isLeft) {
+            targetX = marginX + textWidth / 2;
+          } else if (isRight) {
+            targetX = width - marginX - textWidth / 2;
+          } else if (isCenter) {
+            targetX = width / 2;
+          }
+
+          if (isTop) {
+            targetY = height - marginY - textHeight / 2;
+          } else if (isBottom) {
+            targetY = marginY + textHeight / 2;
+          } else if (isMid) {
+            targetY = height / 2;
+          }
+
+          // Center the text block around the target point.
+          let drawX = targetX - textWidth / 2;
+          let drawY = targetY - textHeight / 2;
+
+          // For exact mid-center we keep the text perfectly centered and skip clamping.
+          const isExactCenter = isMid && isCenter;
+
+          if (!isExactCenter) {
+            // Clamp so text box stays within margins (approximate, ignores rotation, but safe).
+            if (drawX < marginX) drawX = marginX;
+            if (drawX + textWidth > width - marginX) {
+              drawX = width - marginX - textWidth;
+            }
+            if (drawY < marginY) drawY = marginY;
+            if (drawY + textHeight > height - marginY) {
+              drawY = height - marginY - textHeight;
+            }
+          }
+
+          // Parse text color from hex
+          const parseColor = (hex: string) => {
+            const normalized = hex.trim().replace(/^#/, "");
+            const intVal = Number.parseInt(normalized, 16);
+            if (Number.isNaN(intVal)) {
+              return { r: 0, g: 0, b: 0 };
+            }
+            const r = ((intVal >> 16) & 0xff) / 255;
+            const g = ((intVal >> 8) & 0xff) / 255;
+            const b = (intVal & 0xff) / 255;
+            return { r, g, b };
+          };
+          const { r, g, b } = parseColor(colorRaw);
+
+          page.drawText(watermarkText, {
+            x: drawX,
+            y: drawY,
+            size: fontSize,
+            font: textFont,
+            color: rgb(r, g, b),
+            opacity,
+            rotate: degrees(rotation),
+          });
+
+          // Underline support: draw a simple line under the text block if requested.
+          if (underline) {
+            const underlineY = drawY - fontSize * 0.15;
+            page.drawLine({
+              start: { x: drawX, y: underlineY },
+              end: { x: drawX + textWidth, y: underlineY },
+              thickness: Math.max(0.5, fontSize * 0.05),
+              color: rgb(r, g, b),
+              opacity,
+            });
+          }
+        } else if (mode === "image" && imageEmbed) {
+          const imageDims = imageEmbed.scale(1);
+          const maxWidth = width * (rotation !== 0 ? 0.36 : 0.45);
+          const maxHeight = height * (rotation !== 0 ? 0.36 : 0.45);
+          const scale = Math.min(maxWidth / imageDims.width, maxHeight / imageDims.height, 1);
+          const { width: w, height: h } = imageEmbed.scale(scale);
+
+          let drawX = x - w / 2;
+          let drawY = y - h / 2;
+
+          const isExactCenter = isMid && isCenter;
+
+          if (!isExactCenter) {
+            // Clamp image box so it remains inside margins (again, approximate wrt rotation).
+            if (drawX < marginX) drawX = marginX;
+            if (drawX + w > width - marginX) {
+              drawX = width - marginX - w;
+            }
+            if (drawY < marginY) drawY = marginY;
+            if (drawY + h > height - marginY) {
+              drawY = height - marginY - h;
+            }
+          }
+
+          page.drawImage(imageEmbed, {
+            x: drawX,
+            y: drawY,
+            width: w,
+            height: h,
+            opacity,
+            rotate: degrees(rotation),
+          });
+        }
+      };
+
+      // Rebuild document with desired layering
+      embeddedPages.forEach((embeddedPage, index) => {
+        const { width, height } = embeddedPage;
+        const newPage = outDoc.addPage([width, height]);
+
+        if (layer === "under") {
+          // Draw watermark first, then the original content on top
+          drawWatermarkOnPage(newPage, index, width, height);
+          newPage.drawPage(embeddedPage);
+        } else {
+          // Draw original content first, then watermark on top
+          newPage.drawPage(embeddedPage);
+          drawWatermarkOnPage(newPage, index, width, height);
+        }
+      });
+
+      const watermarkedBytes = await outDoc.save();
+
+      res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("Content-Disposition", `attachment; filename=${watermarkedName}`)
+        .send(Buffer.from(watermarkedBytes));
+    } catch (error) {
+      console.error("Error watermarking PDF", error);
+      res.status(500).json({
         status: "error",
-        message: "Please upload a PDF file to watermark.",
+        message: "Failed to watermark PDF. Please try again.",
       });
     }
-
-    if (file.size > 100 * 1024 * 1024) {
-      return res.status(413).json({
-        status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
-      });
-    }
-
-    const originalName = file.originalname || "document.pdf";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const watermarkedName = `${base}-watermarked.pdf`;
-
-    // Stub: mirror the original bytes with a new filename. Real watermark drawing
-    // (text/image, opacity, rotation, position) will be implemented in a later phase.
-    res
-      .status(200)
-      .contentType("application/pdf")
-      .setHeader("Content-Disposition", `attachment; filename=${watermarkedName}`)
-      .send(file.buffer);
-  } catch (error) {
-    console.error("Error watermarking PDF", error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to watermark PDF. Please try again.",
-    });
   }
-});
+);
 
 app.post("/sign-pdf", upload.single("file"), async (req: Request, res: Response) => {
   try {
@@ -863,16 +1564,12 @@ app.post("/protect-pdf", upload.single("file"), async (req: Request, res: Respon
     try {
       // First, detect if the PDF is already encrypted.
       try {
-        const { stdout, stderr } = await execFileAsync(qpdfPath, [
+        const { stdout } = await execFileAsync(qpdfPath, [
           "--warning-exit-0",
           "--show-encryption",
           inputPath,
         ]);
         const showEncOut = stdout?.toString() || "";
-        console.log("qpdf --show-encryption (protect) stdout:\n", showEncOut);
-        if (stderr) {
-          console.log("qpdf --show-encryption (protect) stderr:\n", stderr.toString());
-        }
         // Newer qpdf prints "File is not encrypted" for unprotected PDFs. Treat anything
         // that does NOT contain "not encrypted" (case-insensitive) as already protected.
         if (!showEncOut.toLowerCase().includes("not encrypted")) {
@@ -972,10 +1669,6 @@ app.post("/unlock-pdf", upload.single("file"), async (req: Request, res: Respons
           inputPath,
         ]);
         const showEncOut = stdout?.toString() || "";
-        console.log("qpdf --show-encryption (unlock) stdout:\n", showEncOut);
-        if (stderr) {
-          console.log("qpdf --show-encryption (unlock) stderr:\n", stderr.toString());
-        }
         // If qpdf reports "File is not encrypted", we can safely skip unlocking.
         if (showEncOut.toLowerCase().includes("not encrypted")) {
           return res.status(400).json({
@@ -999,17 +1692,9 @@ app.post("/unlock-pdf", upload.single("file"), async (req: Request, res: Respons
         outputPath,
       ];
 
-      console.log("qpdf decrypt (unlock) args (redacted password)", {
-        qpdfPath,
-        inputPath,
-        outputPath,
-      });
-
       try {
         await execFileAsync(qpdfPath, args);
-        console.log("qpdf decrypt (unlock) succeeded for", inputPath);
-      } catch (err) {
-        console.error("qpdf decrypt (unlock) failed", err);
+      } catch {
         return res.status(401).json({
           status: "error",
           code: "incorrect_password",

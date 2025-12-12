@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FileDown, ArrowRight, RotateCcw, Download } from "lucide-react";
+import { FileDown, ArrowRight, RotateCcw, Download, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
@@ -46,6 +46,9 @@ export default function CompressPDF() {
           formData.append("files", file.file, file.name ?? "file.pdf");
         }
       });
+
+      // Pass quality (10–100) to backend so it can choose an appropriate compression level.
+      formData.append("quality", String(quality[0] ?? 70));
 
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -185,8 +188,14 @@ export default function CompressPDF() {
               {files.length > 0 && (
                 <div ref={previewRef} className="mt-8 space-y-6">
                   <div className="rounded-xl border border-border bg-card p-6">
-                    <h3 className="font-semibold mb-4">Compression Level</h3>
-                    
+                    <h3 className="font-semibold mb-2">Compression Level</h3>
+                    <div className="mb-4 flex items-start gap-2 rounded-md border border-accent/20 bg-accent/5 px-3 py-2 text-xs text-muted-foreground">
+                      <Info className="mt-px h-3.5 w-3.5 text-accent" />
+                      <p>
+                        Image-heavy PDFs may take up to 30-60 seconds to compress, especially at stronger
+                        compression levels.
+                      </p>
+                    </div>
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
                         <Label>Quality: {quality[0]}%</Label>
@@ -208,11 +217,12 @@ export default function CompressPDF() {
                       </div>
                     </div>
 
-                    <div className="mt-6 grid grid-cols-3 gap-3">
+                    <div className="mt-6 grid grid-cols-4 gap-3">
                       {[
-                        { label: "Extreme", value: 20, desc: "~90% smaller" },
-                        { label: "Balanced", value: 50, desc: "~70% smaller" },
-                        { label: "Light", value: 80, desc: "~40% smaller" },
+                        { label: "Fast", value: 70, desc: "Quicker, lighter compression" },
+                        { label: "Extreme", value: 20, desc: "Maximum size reduction" },
+                        { label: "Balanced", value: 50, desc: "Strong reduction, good quality" },
+                        { label: "Light", value: 85, desc: "Best quality, smaller size" },
                       ].map((preset) => (
                         <button
                           key={preset.value}
