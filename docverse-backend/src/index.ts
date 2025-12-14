@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import multer from "multer";
-import { PDFDocument, StandardFonts, rgb, degrees } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb, degrees, PDFImage } from "pdf-lib";
 import JSZip from "jszip";
 import fs from "fs";
 import os from "os";
@@ -18,7 +18,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB per file (frontend also enforces this)
-    files: 5,
+    files: 50,
   },
 });
 
@@ -88,6 +88,208 @@ app.post("/merge-pdf", upload.array("files", 5), async (req: Request, res: Respo
     res.status(500).json({
       status: "error",
       message: "Failed to merge PDFs. Please try again.",
+    });
+  }
+});
+
+app.post("/ocr-searchable-pdf", upload.array("files", 10), async (req: Request, res: Response) => {
+  try {
+    const files = req.files as Express.Multer.File[] | undefined;
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "Please upload at least one file for OCR.",
+      });
+    }
+
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    const maxTotal = 100 * 1024 * 1024; // 100MB total across all uploads
+
+    if (totalSize > maxTotal) {
+      return res.status(413).json({
+        status: "error",
+        message: "Total size of uploaded files exceeds 100MB.",
+      });
+    }
+
+    const uiLanguage = (req.body.language as string) || "en";
+    const tesseractLangMap: Record<string, string> = {
+      en: "eng",
+      es: "spa",
+      fr: "fra",
+      de: "deu",
+      it: "ita",
+      pt: "por",
+      zh: "chi_sim",
+      ja: "jpn",
+      ko: "kor",
+      ar: "ara",
+    };
+    const language = tesseractLangMap[uiLanguage] || "eng";
+
+    // Simple page-count limit to keep OCR requests reasonable
+    const MAX_OCR_PAGES = 50;
+
+    let totalPages = 0;
+    for (const file of files) {
+      const lowerName = (file.originalname || "").toLowerCase();
+      const isPdf = file.mimetype === "application/pdf" || lowerName.endsWith(".pdf");
+      if (isPdf) {
+        try {
+          const pdfDoc = await PDFDocument.load(file.buffer);
+          totalPages += pdfDoc.getPageCount();
+        } catch {
+          // If we can't read page count, skip adding; OCR may still try but page limit won't apply from count.
+        }
+      } else {
+        totalPages += 1;
+      }
+      if (totalPages > MAX_OCR_PAGES) break;
+    }
+
+    if (totalPages > MAX_OCR_PAGES) {
+      return res.status(413).json({
+        status: "error",
+        message: `This request contains approximately ${totalPages} pages. OCR is limited to ${MAX_OCR_PAGES} pages per request. Please split your PDF first (for example using Split PDF) and try again.`,
+      });
+    }
+
+    const safeRemovePath = async (targetPath: string) => {
+      try {
+        const stat = await fs.promises.stat(targetPath);
+        if (stat.isDirectory()) {
+          await fs.promises.rm(targetPath, { recursive: true, force: true });
+        } else {
+          await fs.promises.unlink(targetPath);
+        }
+      } catch {
+        // ignore cleanup errors
+      }
+    };
+
+    // Convert a PDF to multiple JPEGs (all pages) at reduced DPI
+    const convertPdfToJpegPages = async (pdfPath: string): Promise<string[]> => {
+      const outputBase = pdfPath.replace(/\.[^.]+$/, "");
+      const args = ["-jpeg", "-r", "120", pdfPath, outputBase];
+      await execFileAsync("pdftoppm", args);
+
+      const jpgPaths: string[] = [];
+      let pageIndex = 1;
+      while (true) {
+        const candidate = `${outputBase}-${pageIndex}.jpg`;
+        try {
+          await fs.promises.access(candidate, fs.constants.F_OK);
+          jpgPaths.push(candidate);
+          pageIndex++;
+        } catch {
+          break;
+        }
+      }
+      return jpgPaths;
+    };
+
+    const perPagePdfPaths: string[] = [];
+    const tempRoots: string[] = [];
+
+    try {
+      for (const [index, file] of files.entries()) {
+        const originalName = file.originalname || `file-${index + 1}`;
+        const lowerName = originalName.toLowerCase();
+        const isPdf = file.mimetype === "application/pdf" || lowerName.endsWith(".pdf");
+
+        let tempRootDir: string | null = null;
+
+        try {
+          if (isPdf) {
+            tempRootDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-ocrsp-pdf-"));
+            const pdfPath = path.join(tempRootDir, "input.pdf");
+            await fs.promises.writeFile(pdfPath, file.buffer);
+
+            const jpgPaths = await convertPdfToJpegPages(pdfPath);
+            for (const [pageIdx, jpgPath] of jpgPaths.entries()) {
+              const outputBase = jpgPath.replace(/\.[^.]+$/, "-ocrsp");
+              const args = [jpgPath, outputBase, "-l", language, "pdf"]; // searchable PDF per page
+              await execFileAsync("tesseract", args);
+              const pagePdfPath = `${outputBase}.pdf`;
+              perPagePdfPaths.push(pagePdfPath);
+            }
+          } else {
+            const extMatch = lowerName.match(/\.([a-z0-9]+)$/);
+            const ext = extMatch ? extMatch[1] : "png";
+            tempRootDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-ocrsp-img-"));
+            const imgPath = path.join(tempRootDir, `input.${ext}`);
+            await fs.promises.writeFile(imgPath, file.buffer);
+
+            const outputBase = imgPath.replace(/\.[^.]+$/, "-ocrsp");
+            const args = [imgPath, outputBase, "-l", language, "pdf"]; // searchable PDF for image
+            await execFileAsync("tesseract", args);
+            const imgPdfPath = `${outputBase}.pdf`;
+            perPagePdfPaths.push(imgPdfPath);
+          }
+
+          if (tempRootDir) {
+            tempRoots.push(tempRootDir);
+          }
+        } catch (fileErr) {
+          console.error("Error processing file for searchable PDF OCR", originalName, fileErr);
+          if (tempRootDir) {
+            tempRoots.push(tempRootDir);
+          }
+        }
+      }
+
+      if (perPagePdfPaths.length === 0) {
+        return res.status(500).json({
+          status: "error",
+          message:
+            "Failed to generate searchable PDF. Please ensure Tesseract and pdftoppm are installed and try again.",
+        });
+      }
+
+      const finalDoc = await PDFDocument.create();
+
+      for (const pagePdfPath of perPagePdfPaths) {
+        try {
+          const pdfBytes = await fs.promises.readFile(pagePdfPath);
+          const srcDoc = await PDFDocument.load(pdfBytes);
+          const srcPages = await finalDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+          for (const p of srcPages) {
+            finalDoc.addPage(p);
+          }
+        } catch (mergeErr) {
+          console.error("Error merging OCR PDF page", pagePdfPath, mergeErr);
+        }
+      }
+
+      const finalBytes = await finalDoc.save();
+
+      // Cleanup temp dirs and per-page PDFs
+      for (const tmpRoot of tempRoots) {
+        await safeRemovePath(tmpRoot);
+      }
+
+      const filename = "ocr-searchable.pdf";
+      res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("Content-Disposition", `attachment; filename=${filename}`)
+        .send(Buffer.from(finalBytes));
+    } catch (err) {
+      console.error("Error in /ocr-searchable-pdf pipeline", err);
+      for (const tmpRoot of tempRoots) {
+        await safeRemovePath(tmpRoot);
+      }
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to generate searchable PDF. Please try again.",
+      });
+    }
+  } catch (error) {
+    console.error("Error in ocr-searchable-pdf endpoint", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to run OCR for searchable PDF. Please try again.",
     });
   }
 });
@@ -637,13 +839,132 @@ app.post("/pdf-to-image", upload.single("file"), async (req: Request, res: Respo
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const zipName = `${base}-images.zip`;
 
-    // Stub: return original bytes but as a ZIP named like an image package.
-    // Real per-page image rendering will be implemented in a later phase.
-    res
-      .status(200)
-      .contentType("application/zip")
-      .setHeader("Content-Disposition", `attachment; filename=${zipName}`)
-      .send(file.buffer);
+    const modeRaw = (req.body.mode as string) || "pageToJpg";
+    const mode = modeRaw === "extractImages" ? "extractImages" : "pageToJpg";
+    const qualityRaw = parseInt((req.body.quality as string) || "80", 10);
+    const quality = Number.isFinite(qualityRaw) ? Math.min(Math.max(qualityRaw, 30), 100) : 80;
+
+    const safeRemovePath = async (targetPath: string) => {
+      try {
+        const stat = await fs.promises.stat(targetPath);
+        if (stat.isDirectory()) {
+          await fs.promises.rm(targetPath, { recursive: true, force: true });
+        } else {
+          await fs.promises.unlink(targetPath);
+        }
+      } catch {
+        // ignore cleanup errors
+      }
+    };
+
+    const tempRootDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-pdf2img-"));
+    const pdfPath = path.join(tempRootDir, "input.pdf");
+    await fs.promises.writeFile(pdfPath, file.buffer);
+
+    try {
+      const zip = new JSZip();
+
+      const sendSingleFile = async (filename: string) => {
+        const ext = path.extname(filename).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".png": "image/png",
+          ".ppm": "image/x-portable-pixmap",
+          ".pbm": "image/x-portable-bitmap",
+          ".pgm": "image/x-portable-graymap",
+          ".tif": "image/tiff",
+          ".tiff": "image/tiff",
+        };
+        const mime = mimeMap[ext] || "application/octet-stream";
+        const bytes = await fs.promises.readFile(path.join(tempRootDir, filename));
+
+        const suggestedName = ext ? `${base}${ext}` : filename;
+        res
+          .status(200)
+          .contentType(mime)
+          .setHeader("Content-Disposition", `attachment; filename=${suggestedName}`)
+          .send(Buffer.from(bytes));
+      };
+
+      if (mode === "pageToJpg") {
+        const dpi = quality >= 90 ? 200 : quality >= 80 ? 160 : 130;
+        const outputPrefix = path.join(tempRootDir, "page");
+
+        const args = [
+          "-jpeg",
+          "-r",
+          String(dpi),
+          "-jpegopt",
+          `quality=${quality}`,
+          pdfPath,
+          outputPrefix,
+        ];
+
+        await execFileAsync("pdftoppm", args);
+
+        const entries = await fs.promises.readdir(tempRootDir);
+        const jpgs = entries
+          .filter((n) => n.startsWith("page-") && n.toLowerCase().endsWith(".jpg"))
+          .sort((a, b) => {
+            const na = parseInt(a.replace(/^page-/, "").replace(/\.jpg$/i, ""), 10);
+            const nb = parseInt(b.replace(/^page-/, "").replace(/\.jpg$/i, ""), 10);
+            return (Number.isFinite(na) ? na : 0) - (Number.isFinite(nb) ? nb : 0);
+          });
+
+        if (jpgs.length === 0) {
+          return res.status(500).json({
+            status: "error",
+            message: "Failed to render PDF pages to images. Please ensure pdftoppm is installed and try again.",
+          });
+        }
+
+        if (jpgs.length === 1) {
+          await sendSingleFile(jpgs[0]);
+          return;
+        }
+
+        for (const filename of jpgs) {
+          const bytes = await fs.promises.readFile(path.join(tempRootDir, filename));
+          zip.file(filename, bytes);
+        }
+      } else {
+        const outputPrefix = path.join(tempRootDir, "img");
+        const args = ["-all", pdfPath, outputPrefix];
+        await execFileAsync("pdfimages", args);
+
+        const entries = await fs.promises.readdir(tempRootDir);
+        const extracted = entries
+          .filter((n) => n.startsWith("img-") && !n.endsWith(".pdf"))
+          .sort((a, b) => a.localeCompare(b));
+
+        if (extracted.length === 0) {
+          return res.status(500).json({
+            status: "error",
+            message: "No images were extracted from this PDF. Please try Page to JPG mode instead.",
+          });
+        }
+
+        if (extracted.length === 1) {
+          await sendSingleFile(extracted[0]);
+          return;
+        }
+
+        for (const filename of extracted) {
+          const bytes = await fs.promises.readFile(path.join(tempRootDir, filename));
+          zip.file(filename, bytes);
+        }
+      }
+
+      const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+      res
+        .status(200)
+        .contentType("application/zip")
+        .setHeader("Content-Disposition", `attachment; filename=${zipName}`)
+        .send(Buffer.from(zipBytes));
+    } finally {
+      await safeRemovePath(tempRootDir);
+    }
   } catch (error) {
     console.error("Error in PDF to Image conversion", error);
     res.status(500).json({
@@ -675,18 +996,105 @@ app.post("/image-to-pdf", upload.array("files", 50), async (req: Request, res: R
     }
 
     const first = files[0];
-    const originalName = first.originalname || "image";
+    const originalName = first.originalname || "images";
     const dotIndex = originalName.lastIndexOf(".");
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const pdfName = `${base}.pdf`;
 
-    // Stub: echo the first image bytes but label them as a PDF.
-    // Real multi-image to single-PDF rendering will be implemented later.
+    const orientationRaw = (req.body.orientation as string) || "portrait";
+    const orientation = orientationRaw === "landscape" ? "landscape" : "portrait";
+    const pageSizeRaw = (req.body.pageSize as string) || "a4";
+    const pageSize = pageSizeRaw === "fit" || pageSizeRaw === "letter" ? pageSizeRaw : "a4";
+    const marginRaw = (req.body.margin as string) || "none";
+    const margin = marginRaw === "small" ? 20 : marginRaw === "big" ? 40 : 0;
+
+    const clampPageDimsToOrientation = (w: number, h: number) => {
+      if (orientation === "portrait") {
+        return w <= h ? { w, h } : { w: h, h: w };
+      }
+      return w >= h ? { w, h } : { w: h, h: w };
+    };
+
+    const fixedPageDims = () => {
+      if (pageSize === "letter") {
+        return clampPageDimsToOrientation(612, 792);
+      }
+      return clampPageDimsToOrientation(595.28, 841.89);
+    };
+
+    const pdfDoc = await PDFDocument.create();
+
+    for (const [idx, f] of files.entries()) {
+      const name = f.originalname || `image-${idx + 1}`;
+      const lower = name.toLowerCase();
+
+      const isPng = f.mimetype === "image/png" || lower.endsWith(".png");
+      let image: PDFImage;
+      try {
+        image = isPng ? await pdfDoc.embedPng(f.buffer) : await pdfDoc.embedJpg(f.buffer);
+      } catch {
+        return res.status(400).json({
+          status: "error",
+          message: `Unsupported image format for file: ${name}. Please upload JPG or PNG images.`,
+        });
+      }
+
+      const imgW = image.width;
+      const imgH = image.height;
+
+      const drawW = imgW;
+      const drawH = imgH;
+
+      let pageW: number;
+      let pageH: number;
+
+      if (pageSize === "fit") {
+        // Fit to image dimensions but allow the user-selected orientation to dictate page orientation.
+        let w = drawW + margin * 2;
+        let h = drawH + margin * 2;
+        if (orientation === "landscape" && w < h) {
+          const tmp = w;
+          w = h;
+          h = tmp;
+        }
+        if (orientation === "portrait" && w > h) {
+          const tmp = w;
+          w = h;
+          h = tmp;
+        }
+        pageW = w;
+        pageH = h;
+      } else {
+        const dims = fixedPageDims();
+        pageW = dims.w;
+        pageH = dims.h;
+      }
+
+      const maxW = Math.max(1, pageW - margin * 2);
+      const maxH = Math.max(1, pageH - margin * 2);
+      const rawScale = Math.min(maxW / drawW, maxH / drawH);
+      const scale = Math.min(rawScale, 1);
+
+      const finalW = drawW * scale;
+      const finalH = drawH * scale;
+      const x = (pageW - finalW) / 2;
+      const y = (pageH - finalH) / 2;
+
+      const page = pdfDoc.addPage([pageW, pageH]);
+      page.drawImage(image, {
+        x,
+        y,
+        width: imgW * scale,
+        height: imgH * scale,
+      });
+    }
+
+    const pdfBytes = await pdfDoc.save();
     res
       .status(200)
       .contentType("application/pdf")
       .setHeader("Content-Disposition", `attachment; filename=${pdfName}`)
-      .send(first.buffer);
+      .send(Buffer.from(pdfBytes));
   } catch (error) {
     console.error("Error in Image to PDF conversion", error);
     res.status(500).json({
@@ -708,7 +1116,7 @@ app.post("/ocr", upload.array("files", 10), async (req: Request, res: Response) 
     }
 
     const totalSize = files.reduce((sum, file) => sum + file.size, 0);
-    const maxTotal = 100 * 1024 * 1024; // 100MB total
+    const maxTotal = 100 * 1024 * 1024; // 100MB total across all uploads
 
     if (totalSize > maxTotal) {
       return res.status(413).json({
@@ -717,16 +1125,154 @@ app.post("/ocr", upload.array("files", 10), async (req: Request, res: Response) 
       });
     }
 
-    const language = (req.body.language as string) || "en";
+    const uiLanguage = (req.body.language as string) || "en";
 
-    // Stub: return placeholder text and echo metadata. Real OCR will be added later.
-    const placeholderText =
-      "This is stub OCR text. Real text extraction will be implemented in a later phase. " +
-      `Language requested: ${language}. Files received: ${files.length}.`;
+    // Map UI language codes to Tesseract language codes
+    const tesseractLangMap: Record<string, string> = {
+      en: "eng",
+      es: "spa",
+      fr: "fra",
+      de: "deu",
+      it: "ita",
+      pt: "por",
+      zh: "chi_sim",
+      ja: "jpn",
+      ko: "kor",
+      ar: "ara",
+    };
+
+    const language = tesseractLangMap[uiLanguage] || "eng";
+
+    // Helper: write a buffer to a temp file and return its path
+    const writeTempFile = async (prefix: string, ext: string, buffer: Buffer): Promise<string> => {
+      const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-ocr-"));
+      const tmpPath = path.join(tmpDir, `${prefix}.${ext}`);
+      await fs.promises.writeFile(tmpPath, buffer);
+      return tmpPath;
+    };
+
+    // Helper: safely remove a path (file or directory), ignoring errors
+    const safeRemovePath = async (targetPath: string) => {
+      try {
+        const stat = await fs.promises.stat(targetPath);
+        if (stat.isDirectory()) {
+          await fs.promises.rm(targetPath, { recursive: true, force: true });
+        } else {
+          await fs.promises.unlink(targetPath);
+        }
+      } catch {
+        // ignore cleanup errors
+      }
+    };
+
+    // Run Tesseract on an image file and return extracted text
+    const runTesseractOnImage = async (imagePath: string): Promise<string> => {
+      const outputBase = imagePath.replace(/\.[^.]+$/, "");
+      const args = [imagePath, outputBase, "-l", language, "txt"]; // txt config to get plain text
+      await execFileAsync("tesseract", args);
+
+      const txtPath = `${outputBase}.txt`;
+      const text = await fs.promises.readFile(txtPath, "utf8");
+
+      // Clean up Tesseract output file but keep original image cleanup to caller
+      await safeRemovePath(txtPath);
+
+      return text.trim();
+    };
+
+    // Convert a PDF to JPEG images for all pages using pdftoppm at reduced DPI
+    const convertPdfToJpegPagesForText = async (pdfPath: string): Promise<string[]> => {
+      const outputBase = pdfPath.replace(/\.[^.]+$/, "");
+      const args = ["-jpeg", "-r", "120", pdfPath, outputBase];
+      await execFileAsync("pdftoppm", args);
+
+      const jpegPaths: string[] = [];
+      let pageIndex = 1;
+      while (true) {
+        const candidate = `${outputBase}-${pageIndex}.jpg`;
+        try {
+          await fs.promises.access(candidate, fs.constants.F_OK);
+          jpegPaths.push(candidate);
+          pageIndex++;
+        } catch {
+          break;
+        }
+      }
+      return jpegPaths;
+    };
+
+    let combinedText = "";
+
+    for (const [index, file] of files.entries()) {
+      const originalName = file.originalname || `file-${index + 1}`;
+      const lowerName = originalName.toLowerCase();
+      const isPdf = file.mimetype === "application/pdf" || lowerName.endsWith(".pdf");
+
+      let tempRootDir: string | null = null;
+      let workPath: string | null = null;
+
+      try {
+        if (isPdf) {
+          // Write PDF to temp and convert all pages to JPEGs at reduced DPI
+          tempRootDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-ocr-pdf-"));
+          const pdfPath = path.join(tempRootDir, "input.pdf");
+          await fs.promises.writeFile(pdfPath, file.buffer);
+
+          const jpegPaths = await convertPdfToJpegPagesForText(pdfPath);
+          for (const jpegPath of jpegPaths) {
+            const pageText = await runTesseractOnImage(jpegPath);
+            if (pageText) {
+              if (combinedText) {
+                combinedText += "\n\n";
+              }
+              combinedText += pageText;
+            }
+          }
+          // continue to next file; workPath not used for PDFs anymore
+          continue;
+        } else {
+          // Treat as image (jpg/png/etc.)
+          const extMatch = lowerName.match(/\.([a-z0-9]+)$/);
+          const ext = extMatch ? extMatch[1] : "png";
+          const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-ocr-img-"));
+          tempRootDir = tmpDir;
+          const imgPath = path.join(tmpDir, `input.${ext}`);
+          await fs.promises.writeFile(imgPath, file.buffer);
+          workPath = imgPath;
+        }
+
+        if (!workPath) continue;
+
+        const text = await runTesseractOnImage(workPath);
+        if (text) {
+          if (combinedText) {
+            combinedText += "\n\n";
+          }
+          combinedText += text;
+        }
+      } catch (ocrError) {
+        console.error("Error processing file for OCR", originalName, ocrError);
+        if (!combinedText) {
+          combinedText = "";
+        }
+      } finally {
+        if (tempRootDir) {
+          await safeRemovePath(tempRootDir);
+        }
+      }
+    }
+
+    if (!combinedText) {
+      return res.status(500).json({
+        status: "error",
+        message:
+          "OCR failed for all uploaded files. Please ensure Tesseract and pdftoppm are installed on the server and try again.",
+      });
+    }
 
     res.status(200).json({
       status: "ok",
-      text: placeholderText,
+      text: combinedText,
     });
   } catch (error) {
     console.error("Error in OCR endpoint", error);
@@ -1405,16 +1951,55 @@ app.post(
             rotate: degrees(rotation),
           });
 
-          // Underline support: draw a simple line under the text block if requested.
+          // Underline support: draw a line under the text block if requested.
+          // For rotated text, compute a rotated segment so the underline visually follows the text angle.
           if (underline) {
-            const underlineY = drawY - fontSize * 0.15;
-            page.drawLine({
-              start: { x: drawX, y: underlineY },
-              end: { x: drawX + textWidth, y: underlineY },
-              thickness: Math.max(0.5, fontSize * 0.05),
-              color: rgb(r, g, b),
-              opacity,
-            });
+            const thickness = Math.max(0.5, fontSize * 0.05);
+
+            if (!rotation) {
+              // Simple horizontal underline for non-rotated text, slightly below the glyphs.
+              const underlineY = drawY - fontSize * 0.12;
+              page.drawLine({
+                start: { x: drawX, y: underlineY },
+                end: { x: drawX + textWidth, y: underlineY },
+                thickness,
+                color: rgb(r, g, b),
+                opacity,
+              });
+            } else {
+              // For rotated text, position the underline at a fixed small distance along the
+              // perpendicular to the text direction so the visual gap stays tight.
+              const angleRad = (rotation * Math.PI) / 180;
+              const ux = Math.cos(angleRad);  // direction along the text
+              const uy = Math.sin(angleRad);
+
+              // Perpendicular vector ("down" relative to the text)
+              const nx = -uy;
+              const ny = ux;
+
+              // Approximate visual center of the rendered text block
+              const cx = drawX + textWidth / 2;
+              const cy = drawY + textHeight / 2;
+
+              // Offset distance from the text center to the underline (negative so it overlaps very slightly)
+              const offset = -fontSize * 0.015;
+              const midX = cx - nx * offset;
+              const midY = cy - ny * offset;
+
+              const halfLen = textWidth / 2;
+              const startX = midX - ux * halfLen;
+              const startY = midY - uy * halfLen;
+              const endX = midX + ux * halfLen;
+              const endY = midY + uy * halfLen;
+
+              page.drawLine({
+                start: { x: startX, y: startY },
+                end: { x: endX, y: endY },
+                thickness,
+                color: rgb(r, g, b),
+                opacity,
+              });
+            }
           }
         } else if (mode === "image" && imageEmbed) {
           const imageDims = imageEmbed.scale(1);
@@ -1484,36 +2069,239 @@ app.post(
   }
 );
 
-app.post("/sign-pdf", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/sign-pdf", upload.any(), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const incomingFiles = (req.files as Express.Multer.File[] | undefined) || [];
+    const pdfFile = incomingFiles.find(
+      (f) => f.fieldname === "file" && (f.mimetype === "application/pdf" || f.originalname?.toLowerCase().endsWith(".pdf"))
+    );
 
-    if (!file) {
+    if (!pdfFile) {
       return res.status(400).json({
         status: "error",
         message: "Please upload a PDF file to sign.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
+    const totalSize = incomingFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+    if (totalSize > 100 * 1024 * 1024) {
       return res.status(413).json({
         status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
+        message: "Uploaded files exceed 100MB limit.",
       });
     }
 
-    const originalName = file.originalname || "document.pdf";
+    const originalName = pdfFile.originalname || "document.pdf";
     const dotIndex = originalName.lastIndexOf(".");
     const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
     const signedName = `${base}-signed.pdf`;
 
-    // Stub: echo original bytes with a new filename. Real signature placement
-    // (drawn/typed/uploaded) will be implemented in a later phase.
+    const rawFields = (req.body.fields as string | undefined) || "";
+    if (!rawFields) {
+      return res.status(400).json({
+        status: "error",
+        message: "Signing data is missing.",
+      });
+    }
+
+    let fields: any[] = [];
+    try {
+      const parsed = JSON.parse(rawFields);
+      fields = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      fields = [];
+    }
+
+    if (!Array.isArray(fields) || fields.length === 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "Signing data is invalid.",
+      });
+    }
+
+    const requiredSignatureField = fields.find((f) => f && (f.id === "signature" || f.type === "signature"));
+    if (!requiredSignatureField) {
+      return res.status(400).json({
+        status: "error",
+        message: "Signature field is required.",
+      });
+    }
+
+    const parseCustomPages = (value: unknown, maxPages: number): number[] => {
+      const unique = new Set<number>();
+
+      if (Array.isArray(value)) {
+        for (const v of value) {
+          const n = typeof v === "number" ? v : parseInt(String(v), 10);
+          if (!Number.isNaN(n) && n >= 1 && n <= maxPages) unique.add(n);
+        }
+        return Array.from(unique).sort((a, b) => a - b);
+      }
+
+      const input = String(value || "").trim();
+      if (!input) return [];
+
+      for (const part of input.split(",")) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const dashIdx = trimmed.indexOf("-");
+        if (dashIdx > 0) {
+          const start = parseInt(trimmed.slice(0, dashIdx).trim(), 10);
+          const end = parseInt(trimmed.slice(dashIdx + 1).trim(), 10);
+          if (Number.isNaN(start) || Number.isNaN(end)) continue;
+          const a = Math.max(1, Math.min(start, end));
+          const b = Math.min(maxPages, Math.max(start, end));
+          for (let i = a; i <= b; i++) unique.add(i);
+        } else {
+          const n = parseInt(trimmed, 10);
+          if (!Number.isNaN(n) && n >= 1 && n <= maxPages) unique.add(n);
+        }
+      }
+
+      return Array.from(unique).sort((a, b) => a - b);
+    };
+
+    const pdfDoc = await PDFDocument.load(pdfFile.buffer);
+    const pages = pdfDoc.getPages();
+    const pageCount = pages.length;
+
+    const resolveTargetPages = (scope: string, activePageIndex: number, custom: unknown): number[] => {
+      const safeActive = Math.min(Math.max(activePageIndex, 0), Math.max(pageCount - 1, 0));
+      if (scope === "all") {
+        return Array.from({ length: pageCount }, (_, i) => i);
+      }
+      if (scope === "allButLast") {
+        return pageCount <= 1 ? [0] : Array.from({ length: pageCount - 1 }, (_, i) => i);
+      }
+      if (scope === "last") {
+        return [Math.max(pageCount - 1, 0)];
+      }
+      if (scope === "custom") {
+        const pageNumbers = parseCustomPages(custom, pageCount);
+        return pageNumbers.map((n) => n - 1);
+      }
+      return [safeActive];
+    };
+
+    const getFieldImageFile = (fieldId: string): Express.Multer.File | undefined => {
+      const candidates = [
+        `fieldImage_${fieldId}`,
+        `fieldImage-${fieldId}`,
+        `image_${fieldId}`,
+        `image-${fieldId}`,
+      ];
+      return incomingFiles.find((f) => candidates.includes(f.fieldname));
+    };
+
+    const getVariantImageFile = (fieldId: string, variantId: string): Express.Multer.File | undefined => {
+      const candidates = [
+        `variantImage_${fieldId}_${variantId}`,
+        `variantImage-${fieldId}-${variantId}`,
+        `variantImage_${fieldId}-${variantId}`,
+        `variantImage-${fieldId}_${variantId}`,
+      ];
+      return incomingFiles.find((f) => candidates.includes(f.fieldname));
+    };
+
+    const isPng = (mimetype: string, name: string) =>
+      mimetype === "image/png" || name.toLowerCase().endsWith(".png");
+
+    const embedCache = new Map<string, any>();
+
+    for (const field of fields) {
+      if (!field || typeof field !== "object") continue;
+
+      const fieldId = String(field.id || "").trim();
+      if (!fieldId) continue;
+
+      const placementsRaw = Array.isArray(field.placements) ? field.placements : [];
+      const placements = placementsRaw
+        .map((p: any) => {
+          const pageIndex = Number(p?.pageIndex);
+          const x = Number(p?.x);
+          const y = Number(p?.y);
+          const width = Number(p?.width);
+          const height = Number(p?.height);
+          const variantId = typeof p?.variantId === "string" ? p.variantId : "";
+          return { pageIndex, x, y, width, height, variantId };
+        })
+        .filter(
+          (p: any) =>
+            Number.isFinite(p.pageIndex) &&
+            Number.isFinite(p.x) &&
+            Number.isFinite(p.y) &&
+            Number.isFinite(p.width) &&
+            Number.isFinite(p.height)
+        );
+
+      if (placements.length === 0) {
+        if (fieldId === "signature") {
+          return res.status(400).json({
+            status: "error",
+            message: "Please place the signature on the document before signing.",
+          });
+        }
+        continue;
+      }
+
+      // When explicit placements are provided by the frontend, treat them as authoritative
+      // and draw the corresponding image once for each placement entry (allowing multiple per page).
+      for (const placement of placements) {
+        const variantId = String(placement.variantId || "").trim();
+        const imageFile = variantId ? getVariantImageFile(fieldId, variantId) : undefined;
+        const fallbackFieldImageFile = getFieldImageFile(fieldId);
+        const effectiveImageFile = imageFile || fallbackFieldImageFile;
+
+        if (!effectiveImageFile) {
+          if (fieldId === "signature") {
+            return res.status(400).json({
+              status: "error",
+              message: "Signature image is required.",
+            });
+          }
+          continue;
+        }
+
+        const cacheKey = `${fieldId}:${variantId || "field"}`;
+        let embed = embedCache.get(cacheKey);
+        if (!embed) {
+          embed = isPng(effectiveImageFile.mimetype, effectiveImageFile.originalname)
+            ? await pdfDoc.embedPng(effectiveImageFile.buffer)
+            : await pdfDoc.embedJpg(effectiveImageFile.buffer);
+          embedCache.set(cacheKey, embed);
+        }
+
+        const pageIndex = placement.pageIndex;
+        const page = pages[pageIndex];
+        if (!page) continue;
+
+        const { width: pageW, height: pageH } = page.getSize();
+
+        const nx = Math.min(1, Math.max(0, placement.x));
+        const ny = Math.min(1, Math.max(0, placement.y));
+        const nw = Math.min(1, Math.max(0.001, placement.width));
+        const nh = Math.min(1, Math.max(0.001, placement.height));
+
+        const x = nx * pageW;
+        const y = pageH - (ny + nh) * pageH;
+        const w = nw * pageW;
+        const h = nh * pageH;
+
+        page.drawImage(embed, {
+          x,
+          y,
+          width: w,
+          height: h,
+        });
+      }
+    }
+
+    const signedBytes = await pdfDoc.save();
     res
       .status(200)
       .contentType("application/pdf")
       .setHeader("Content-Disposition", `attachment; filename=${signedName}`)
-      .send(file.buffer);
+      .send(Buffer.from(signedBytes));
   } catch (error) {
     console.error("Error signing PDF", error);
     res.status(500).json({

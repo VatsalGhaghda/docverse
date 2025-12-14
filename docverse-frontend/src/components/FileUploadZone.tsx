@@ -239,16 +239,17 @@ export function FileUploadZone({
             </Button>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {files.map((file) => (
-              <div
-                key={file.id}
-                className="group relative flex flex-col rounded-xl border border-border bg-card p-3 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5 cursor-move"
-                draggable
-                onDragStart={(e) => handleItemDragStart(e, file.id)}
-                onDragOver={(e) => handleItemDragOver(e, file.id)}
-                onDragEnd={handleItemDragEnd}
-              >
+          <div className="overflow-x-auto scroll-slim pb-1">
+            <div className="flex gap-4 min-w-full">
+              {files.map((file) => (
+                <div
+                  key={file.id}
+                  className="group relative flex flex-col rounded-xl border border-border bg-card p-3 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5 cursor-move min-w-[220px] max-w-[260px]"
+                  draggable
+                  onDragStart={(e) => handleItemDragStart(e, file.id)}
+                  onDragOver={(e) => handleItemDragOver(e, file.id)}
+                  onDragEnd={handleItemDragEnd}
+                >
                 <div className="absolute left-2 top-2 inline-flex items-center rounded-full bg-muted/90 px-2 py-0.5 text-[11px] font-medium text-foreground shadow-sm">
                   {formatFileSize(file.size)}
                 </div>
@@ -293,6 +294,7 @@ export function FileUploadZone({
                 </div>
               </div>
             ))}
+            </div>
           </div>
         </div>
       )}

@@ -30,8 +30,11 @@ export default function OCRPDF() {
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.\n\nDuis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident."
   );
   const [uploadKey, setUploadKey] = useState(0);
+  const [isDownloadingSearchable, setIsDownloadingSearchable] = useState(false);
+  const uploadRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
+  const resultRef = useRef<HTMLDivElement | null>(null);
 
   const allReady = files.length > 0 && files.every((f) => f.status === "complete");
 
@@ -81,6 +84,11 @@ export default function OCRPDF() {
             setIsComplete(true);
             resolve();
           } else {
+            const data = xhr.response as any;
+            const msg = data && typeof data.message === "string" ? data.message : null;
+            if (msg) {
+              setError(msg);
+            }
             reject(new Error(`Request failed with status ${xhr.status}`));
           }
         };
@@ -94,7 +102,11 @@ export default function OCRPDF() {
       });
     } catch (err) {
       console.error("Error running OCR", err);
-      setError("Something went wrong while running OCR. Please try again.");
+      if (!error) {
+        setError(
+          "OCR couldn't be completed for this file. This can happen with very large or low-quality scans. Try a smaller PDF, fewer pages, or a clearer scan, then run OCR again."
+        );
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -133,11 +145,90 @@ export default function OCRPDF() {
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadSearchablePdf = async () => {
+    const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+
+    if (!allReady) return;
+
+    try {
+      setIsDownloadingSearchable(true);
+      const formData = new FormData();
+      for (const f of files) {
+        const file = f.file as File | undefined;
+        if (file) {
+          formData.append("files", file, file.name ?? "document.pdf");
+        }
+      }
+      formData.append("language", language);
+
+      const response = await fetch(`${apiBase}/ocr-searchable-pdf`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        let backendMessage: string | null = null;
+        try {
+          const data = (await response.json()) as any;
+          if (data && typeof data.message === "string") {
+            backendMessage = data.message;
+          }
+        } catch {
+          // ignore JSON parse errors
+        }
+        if (backendMessage) {
+          setError(backendMessage);
+        }
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "ocr-searchable.pdf";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Error downloading searchable PDF", err);
+      if (!error) {
+        setError(
+          "We couldn't generate the searchable PDF. This can happen with very large or complex documents. Try running OCR on fewer pages or a smaller file, then download the searchable PDF again."
+        );
+      }
+    } finally {
+      setIsDownloadingSearchable(false);
+    }
+  };
+
+  // First scroll: when files are selected, scroll to the upload area (blue bar)
   useEffect(() => {
-    if (files.length > 0 && previewRef.current) {
-      previewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (files.length > 0 && uploadRef.current) {
+      const rect = uploadRef.current.getBoundingClientRect();
+      const offset = window.scrollY + rect.top + 140;
+      window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
     }
   }, [files.length]);
+
+  // When an error occurs, bring the user back to the upload section so they see the message
+  useEffect(() => {
+    if (error && uploadRef.current) {
+      const rect = uploadRef.current.getBoundingClientRect();
+      const offset = window.scrollY + rect.top - 60;
+      window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+    }
+  }, [error]);
+
+  // Second scroll: when upload is fully complete, scroll to the settings/preview block
+  useEffect(() => {
+    if (allReady && previewRef.current) {
+      const rect = previewRef.current.getBoundingClientRect();
+      const offset = window.scrollY + rect.top - 90;
+      window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+    }
+  }, [allReady]);
 
   useEffect(() => {
     if (isProcessing && !isComplete && loadingRef.current) {
@@ -146,6 +237,15 @@ export default function OCRPDF() {
       window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
     }
   }, [isProcessing, isComplete]);
+
+  // Scroll to result section when OCR is complete
+  useEffect(() => {
+    if (isComplete && resultRef.current) {
+      const rect = resultRef.current.getBoundingClientRect();
+      const offset = window.scrollY + rect.top - 50;
+      window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+    }
+  }, [isComplete]);
 
   return (
     <ToolPageLayout
@@ -172,13 +272,18 @@ export default function OCRPDF() {
             </div>
           ) : (
             <>
-              <FileUploadZone
-                key={uploadKey}
-                accept=".pdf,.jpg,.jpeg,.png"
-                multiple
-                maxFiles={10}
-                onFilesChange={setFiles}
-              />
+              <div ref={uploadRef}>
+                {error && (
+                  <p className="mb-3 text-sm text-destructive text-center max-w-md mx-auto">{error}</p>
+                )}
+                <FileUploadZone
+                  key={uploadKey}
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  multiple
+                  maxFiles={10}
+                  onFilesChange={setFiles}
+                />
+              </div>
 
               {files.length > 0 && (
                 <div ref={previewRef} className="mt-8 space-y-6">
@@ -220,13 +325,16 @@ export default function OCRPDF() {
                       <RotateCcw className="h-4 w-4 mr-2" />
                       Start over
                     </Button>
+                    {error && (
+                      <p className="mt-2 text-sm text-destructive text-center max-w-md">{error}</p>
+                    )}
                   </div>
                 </div>
               )}
             </>
           )
         ) : (
-          <div className="py-8">
+          <div ref={resultRef} className="py-8">
             <div className="text-center mb-8">
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-secondary/10">
                 <ScanText className="h-8 w-8 text-secondary" />
@@ -260,23 +368,27 @@ export default function OCRPDF() {
             </div>
 
             <div className="flex flex-col items-center gap-4">
-              <div className="flex gap-3">
-                <Button
-                  size="lg"
-                  className="btn-hero gradient-secondary"
-                  onClick={() => handleDownload("pdf")}
-                >
-                  <Download className="h-5 w-5 mr-2" />
-                  Download as PDF
-                </Button>
+              <div className="flex flex-col sm:flex-row gap-3">
                 <Button size="lg" variant="outline" onClick={() => handleDownload("txt")}>
                   <Download className="h-5 w-5 mr-2" />
                   Download as TXT
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={handleDownloadSearchablePdf}
+                  disabled={isDownloadingSearchable}
+                >
+                  <Download className="h-5 w-5 mr-2" />
+                  {isDownloadingSearchable ? "Generating Searchable PDF..." : "Download Searchable PDF"}
                 </Button>
               </div>
               <Button variant="ghost" onClick={handleReset}>
                 Scan another document
               </Button>
+              {error && (
+                <p className="mt-1 text-sm text-destructive text-center max-w-md">{error}</p>
+              )}
             </div>
           </div>
         )}
