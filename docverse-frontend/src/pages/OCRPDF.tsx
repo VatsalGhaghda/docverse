@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ScanText, ArrowRight, RotateCcw, Download, Copy, Check } from "lucide-react";
+import { ScanText, ArrowRight, RotateCcw, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToolPageLayout } from "@/components/ToolPageLayout";
@@ -23,14 +23,10 @@ export default function OCRPDF() {
   const [language, setLanguage] = useState("en");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
-  const [extractedText, setExtractedText] = useState<string>(
-    "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.\n\nDuis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident."
-  );
   const [uploadKey, setUploadKey] = useState(0);
-  const [isDownloadingSearchable, setIsDownloadingSearchable] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const uploadRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
@@ -47,6 +43,10 @@ export default function OCRPDF() {
     setIsComplete(false);
     setError(null);
     setProgress(8);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
+    }
 
     const formData = new FormData();
     for (const f of files) {
@@ -61,8 +61,8 @@ export default function OCRPDF() {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
 
-        xhr.open("POST", `${apiBase}/ocr`);
-        xhr.responseType = "json";
+        xhr.open("POST", `${apiBase}/ocr-searchable-pdf`);
+        xhr.responseType = "blob";
 
         const interval = window.setInterval(() => {
           setProgress((prev) => {
@@ -76,19 +76,13 @@ export default function OCRPDF() {
           window.clearInterval(interval);
 
           if (xhr.status >= 200 && xhr.status < 300) {
-            const data = xhr.response as any;
-            if (data && typeof data.text === "string") {
-              setExtractedText(data.text);
-            }
+            const blob = xhr.response as Blob;
+            const url = URL.createObjectURL(blob);
+            setDownloadUrl(url);
             setProgress(100);
             setIsComplete(true);
             resolve();
           } else {
-            const data = xhr.response as any;
-            const msg = data && typeof data.message === "string" ? data.message : null;
-            if (msg) {
-              setError(msg);
-            }
             reject(new Error(`Request failed with status ${xhr.status}`));
           }
         };
@@ -101,10 +95,10 @@ export default function OCRPDF() {
         xhr.send(formData);
       });
     } catch (err) {
-      console.error("Error running OCR", err);
+      console.error("Error generating searchable PDF", err);
       if (!error) {
         setError(
-          "OCR couldn't be completed for this file. This can happen with very large or low-quality scans. Try a smaller PDF, fewer pages, or a clearer scan, then run OCR again."
+          "We couldn't generate the searchable PDF. This can happen with very large or complex documents. Try fewer pages or a clearer scan and try again."
         );
       }
     } finally {
@@ -119,88 +113,11 @@ export default function OCRPDF() {
     setProgress(0);
     setLanguage("en");
     setUploadKey((prev) => prev + 1);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(extractedText).catch(() => {
-      // ignore copy errors for now
-    });
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleDownload = (type: "pdf" | "txt") => {
-    const blob =
-      type === "txt"
-        ? new Blob([extractedText], { type: "text/plain;charset=utf-8" })
-        : new Blob([extractedText], { type: "application/pdf" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = type === "txt" ? "ocr-result.txt" : "ocr-result.pdf";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleDownloadSearchablePdf = async () => {
-    const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-
-    if (!allReady) return;
-
-    try {
-      setIsDownloadingSearchable(true);
-      const formData = new FormData();
-      for (const f of files) {
-        const file = f.file as File | undefined;
-        if (file) {
-          formData.append("files", file, file.name ?? "document.pdf");
-        }
-      }
-      formData.append("language", language);
-
-      const response = await fetch(`${apiBase}/ocr-searchable-pdf`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        let backendMessage: string | null = null;
-        try {
-          const data = (await response.json()) as any;
-          if (data && typeof data.message === "string") {
-            backendMessage = data.message;
-          }
-        } catch {
-          // ignore JSON parse errors
-        }
-        if (backendMessage) {
-          setError(backendMessage);
-        }
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "ocr-searchable.pdf";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("Error downloading searchable PDF", err);
-      if (!error) {
-        setError(
-          "We couldn't generate the searchable PDF. This can happen with very large or complex documents. Try running OCR on fewer pages or a smaller file, then download the searchable PDF again."
-        );
-      }
-    } finally {
-      setIsDownloadingSearchable(false);
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      setDownloadUrl(null);
     }
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   // First scroll: when files are selected, scroll to the upload area (blue bar)
@@ -341,48 +258,27 @@ export default function OCRPDF() {
               </div>
               <h2 className="text-2xl font-bold mb-2">OCR Complete!</h2>
               <p className="text-muted-foreground">
-                Text has been extracted from your document.
+                Your searchable PDF is ready to download.
               </p>
             </div>
-
-            <div className="rounded-xl border border-border bg-card p-6 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold">Extracted Text</h3>
-                <Button variant="outline" size="sm" onClick={handleCopy}>
-                  {copied ? (
-                    <>
-                      <Check className="h-4 w-4 mr-1" />
-                      Copied!
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-4 w-4 mr-1" />
-                      Copy
-                    </>
-                  )}
-                </Button>
-              </div>
-              <div className="bg-muted rounded-lg p-4 font-mono text-sm max-h-64 overflow-y-auto whitespace-pre-wrap">
-                {extractedText}
-              </div>
-            </div>
-
             <div className="flex flex-col items-center gap-4">
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Button size="lg" variant="outline" onClick={() => handleDownload("txt")}>
-                  <Download className="h-5 w-5 mr-2" />
-                  Download as TXT
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  onClick={handleDownloadSearchablePdf}
-                  disabled={isDownloadingSearchable}
-                >
-                  <Download className="h-5 w-5 mr-2" />
-                  {isDownloadingSearchable ? "Generating Searchable PDF..." : "Download Searchable PDF"}
-                </Button>
-              </div>
+              <Button
+                size="lg"
+                variant="outline"
+                onClick={() => {
+                  if (!downloadUrl) return;
+                  const link = document.createElement("a");
+                  link.href = downloadUrl;
+                  link.download = "ocr-searchable.pdf";
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                }}
+                disabled={!downloadUrl}
+              >
+                <Download className="h-5 w-5 mr-2" />
+                Download Searchable PDF
+              </Button>
               <Button variant="ghost" onClick={handleReset}>
                 Scan another document
               </Button>

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Upload, X, FileText, GripVertical, Plus } from "lucide-react";
+import { Upload, X, FileText, GripVertical, Plus, FileSpreadsheet, Presentation } from "lucide-react";
 import { PdfThumbnail } from "@/components/PdfThumbnail";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -21,6 +21,12 @@ interface FileUploadZoneProps {
   onFilesChange?: (files: UploadedFile[]) => void;
   className?: string;
   showThumbnails?: boolean;
+  // Controls which icon/colour to show for non-PDF thumbnails and the upload chip
+  variant?: "primary" | "secondary" | "accent";
+  iconType?: "generic" | "word" | "excel" | "powerpoint";
+  // When true, thumbnails are laid out in a horizontally scrollable row.
+  // When false, they wrap normally without showing the horizontal scroll strip.
+  horizontalScroll?: boolean;
 }
 
 export function FileUploadZone({
@@ -30,10 +36,48 @@ export function FileUploadZone({
   onFilesChange,
   className,
   showThumbnails = true,
+  variant = "primary",
+  iconType = "generic",
+  horizontalScroll = true,
 }: FileUploadZoneProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  const colorClasses = (() => {
+    if (variant === "secondary") {
+      return {
+        bg: "bg-secondary/10",
+        icon: "text-secondary",
+        ready: "text-secondary",
+      } as const;
+    }
+    if (variant === "accent") {
+      return {
+        bg: "bg-accent/10",
+        icon: "text-accent",
+        ready: "text-accent",
+      } as const;
+    }
+    return {
+      bg: "bg-primary/10",
+      icon: "text-primary",
+      ready: "text-secondary",
+    } as const;
+  })();
+
+  const renderFileIcon = () => {
+    if (iconType === "excel") {
+      return <FileSpreadsheet className={`h-10 w-10 ${colorClasses.icon}`} />;
+    }
+    if (iconType === "powerpoint") {
+      return <Presentation className={`h-10 w-10 ${colorClasses.icon}`} />;
+    }
+    if (iconType === "word") {
+      return <FileText className={`h-10 w-10 ${colorClasses.icon}`} />;
+    }
+    return <FileText className={`h-10 w-10 ${colorClasses.icon}`} />;
+  };
 
   useEffect(() => {
     onFilesChange?.(files);
@@ -184,8 +228,8 @@ export function FileUploadZone({
           onChange={handleFileInput}
           className="hidden"
         />
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 mb-4">
-          <Upload className="h-8 w-8 text-primary" />
+        <div className={cn("flex h-16 w-16 items-center justify-center rounded-2xl mb-4", colorClasses.bg)}>
+          <Upload className={cn("h-8 w-8", colorClasses.icon)} />
         </div>
         <h3 className="text-xl font-semibold mb-2">
           Drop your files here
@@ -239,8 +283,20 @@ export function FileUploadZone({
             </Button>
           </div>
 
-          <div className="overflow-x-auto scroll-slim pb-1">
-            <div className="flex gap-4 min-w-full">
+          <div
+            className={cn(
+              "pb-1",
+              horizontalScroll
+                ? "overflow-x-auto scroll-slim"
+                : "overflow-visible"
+            )}
+          >
+            <div
+              className={cn(
+                "flex gap-4",
+                horizontalScroll ? "min-w-full" : "flex-wrap"
+              )}
+            >
               {files.map((file) => (
                 <div
                   key={file.id}
@@ -269,7 +325,7 @@ export function FileUploadZone({
                   {showThumbnails && file.file && file.file.type === "application/pdf" ? (
                     <PdfThumbnail file={file.file} />
                   ) : (
-                    <FileText className="h-10 w-10 text-primary" />
+                    renderFileIcon()
                   )}
                 </div>
 
@@ -282,7 +338,7 @@ export function FileUploadZone({
                       <Progress value={file.progress} className="h-1.5 w-20" />
                     )}
                     {file.status === "complete" && (
-                      <span className="text-[11px] font-medium text-secondary">
+                      <span className={cn("text-[11px] font-medium", colorClasses.ready)}>
                         Ready
                       </span>
                     )}

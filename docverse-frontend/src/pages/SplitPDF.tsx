@@ -71,25 +71,30 @@ export default function SplitPDF() {
     void detectPages();
   }, [activeFile]);
 
-  // Auto-scroll to preview section once the file is uploaded and preview is rendered
+  const allReady = files.length === 1 && files[0].status === "complete";
+  // Auto-scroll to upload area first, then preview/options when the file is ready
   useEffect(() => {
-    if (files.length > 0 && previewRef.current) {
-      previewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (!files.length || !uploadRef.current) return;
+    const rect = uploadRef.current.getBoundingClientRect();
+    const offset = window.scrollY + rect.top + 50;
+    window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
   }, [files.length]);
+
+  useEffect(() => {
+    if (!allReady || !previewRef.current) return;
+    const rect = previewRef.current.getBoundingClientRect();
+    const offset = window.scrollY + rect.top - 80;
+    window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+  }, [allReady]);
 
   useEffect(() => {
     // when processing starts, scroll so the loader sits comfortably below the top
     if (isProcessing && !isComplete && loadingRef.current) {
       const rect = loadingRef.current.getBoundingClientRect();
-      const offset = window.scrollY + rect.top - 180; // 180px padding from top
+      const offset = window.scrollY + rect.top - 120;
       window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
     }
   }, [isProcessing, isComplete]);
-
-  // No additional scroll on completion; keep the page where the loader was
-
-  const allReady = files.length === 1 && files[0].status === "complete";
 
   const handleProcess = async () => {
     const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";

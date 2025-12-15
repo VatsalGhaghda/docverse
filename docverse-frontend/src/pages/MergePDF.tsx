@@ -158,6 +158,7 @@ export default function MergePDF() {
                   accept=".pdf"
                   multiple
                   maxFiles={5}
+                  horizontalScroll={false}
                   onFilesChange={setFiles}
                 />
               </div>

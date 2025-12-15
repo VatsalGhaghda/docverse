@@ -19,6 +19,86 @@
 - Set up GitHub repository
 - Configure Vercel/Netlify for frontend deployment
 - Set up Oracle Cloud Free Tier VM
+
+## Phase 2: Core PDF & Office Tools (Implemented)
+
+### Image → PDF
+- Implemented backend endpoint `POST /image-to-pdf` using `pdf-lib`.
+- Combines multiple images (JPG/PNG) into a single PDF.
+- Supports options:
+  - Orientation: portrait / landscape (changes page orientation only, not image rotation).
+  - Page size: A4, Letter, Fit to image.
+  - Margins: none, small, big.
+- Images are embedded unrotated, centered and scaled to fit page + margins.
+
+**Frontend (`ImageToPDF.tsx`)**
+- Drag-and-drop upload for single/multiple images with reordering.
+- Option controls (orientation, page size, margins).
+- Option-aware previews: thumbnails reflect current orientation/page size/margins; images are never rotated, only page aspect and padding change.
+- Progress and completion UI with download of final PDF.
+
+### PDF → Image
+- Implemented backend endpoint `POST /pdf-to-image`.
+- Modes:
+  - `pageToJpg`: render each PDF page to JPG via `pdftoppm` (from `poppler-utils`).
+  - `extractImages`: extract embedded images via `pdfimages` (from `poppler-utils`).
+- Quality mapping:
+  - Normal / High options mapped to DPI + JPEG quality flags.
+- Output behavior:
+  - Single output image → returned directly with correct `Content-Type` and filename.
+  - Multiple images → returned as ZIP archive `<base>-images.zip`.
+
+**Frontend (`PDFToImage.tsx`)**
+- Upload single PDF and choose mode (Page to JPG / Extract images) and quality (Normal / High).
+- Handles both single-image and ZIP responses by inspecting `Content-Type` and `Content-Disposition`.
+- Download button label updates dynamically ("Download Image" vs "Download Images (ZIP)").
+
+### Word / Excel / PowerPoint → PDF
+- Implemented backend endpoints:
+  - `POST /convert/word-to-pdf`
+  - `POST /convert/excel-to-pdf`
+  - `POST /convert/powerpoint-to-pdf`
+- Primary conversion engine: **Adobe PDF Services** (when enabled) with **LibreOffice fallback**.
+  - Adobe path uses SDK v4.1.0 job pattern:
+    - `upload` → `submit` → `getJobResult` → `getContent`.
+  - Fallback path uses LibreOffice headless:
+    - `soffice --headless --convert-to pdf --outdir <tempDir> <inputFile>`
+  - Multi-file upload is supported. Output behavior:
+    - Single output PDF: returned directly.
+    - Multiple output PDFs: returned as a ZIP.
+- Each response includes `X-Conversion-Engine` (`adobe` or `libreoffice`) header for debugging.
+
+**Frontend (`WordToPDF.tsx`, `ExcelToPDF.tsx`, `PowerPointToPDF.tsx`)**
+- Single-file upload using shared `FileUploadZone` component.
+- Progress indicator during conversion and completion screen with "Download PDF" button.
+- Output filename is derived from original base name (e.g. `document.docx` → `document.pdf`).
+
+### Backend Docker & System Dependencies
+
+- Base image: `node:18-bullseye-slim`.
+- System packages installed for PDF/image/OCR/Office conversions:
+  - `qpdf` (PDF compression).
+  - `ghostscript` (PDF compression/processing).
+  - `poppler-utils` (provides `pdftoppm`, `pdfimages` for PDF → image).
+  - `tesseract-ocr`, `tesseract-ocr-eng` (OCR engine + English language).
+  - Additional Tesseract language packs for the OCR UI language selector:
+    - `tesseract-ocr-spa`, `tesseract-ocr-fra`, `tesseract-ocr-deu`, `tesseract-ocr-ita`, `tesseract-ocr-por`,
+      `tesseract-ocr-chi-sim`, `tesseract-ocr-jpn`, `tesseract-ocr-kor`, `tesseract-ocr-ara`.
+  - `libreoffice` (for Word/Excel/PowerPoint → PDF).
+- Docker build steps:
+  - `npm install --production=false`
+  - `npm run build`
+  - `npm start` (runs compiled `dist/index.js`).
+
+### Environment & Dev Commands (Current State)
+
+- Backend local dev: `npm run dev` (Express + ts-node-dev on port 4000), using `.env` loaded via `dotenv`.
+- Frontend local dev: `npm run dev` (Vite dev server on port 8080), with `VITE_API_BASE_URL` pointing to backend (defaults to `http://localhost:4000`).
+- Adobe PDF Services Node SDK (`@adobe/pdfservices-node-sdk@4.1.0`) is integrated and used as a primary engine when enabled.
+  - Toggle behavior via environment variables:
+    - `ADOBE_PDF_SERVICES_ENABLED=true|false`
+    - `USE_ADOBE_AS_PRIMARY=true|false`
+    - `ADOBE_CLIENT_ID`, `ADOBE_CLIENT_SECRET`
 - Install Docker on the VM
 
 ### Deployment Targets (Phase 1+)
@@ -47,6 +127,10 @@
   - PDF to Image conversion (pdf2pic)
   - Image to PDF conversion (pdf-lib)
 
+**Note (Current State)**
+- Core PDF operations are currently executed synchronously in the API process.
+- A background queue/worker is still the recommended next step for production reliability and to avoid request timeouts.
+
 ### Infrastructure
 - Set up Redis on Oracle Cloud VM
 - Configure basic monitoring
@@ -66,6 +150,24 @@
   - PDF to Word conversion (LibreOffice headless)
   - Word to PDF conversion (LibreOffice headless)
   - Basic OCR (tesseract.js)
+
+**Updates (Implemented / Current Implementation)**
+- PDF compression:
+  - Primary engine: **Adobe PDF Services** (when enabled).
+  - Fallback engine: **Ghostscript**.
+  - Multi-file upload supported with single vs ZIP response.
+  - Response includes `X-Conversion-Engine`.
+- Office conversions:
+  - Office → PDF: Adobe primary + LibreOffice fallback.
+  - PDF → Word/Excel/PowerPoint: Adobe primary + LibreOffice fallback.
+  - Multi-file upload supported with single vs ZIP response.
+  - Response includes `X-Conversion-Engine`.
+- OCR:
+  - Endpoint: `POST /ocr-searchable-pdf`.
+  - Output: searchable PDF only.
+  - Primary engine: Adobe OCR (PDF inputs; merges multiple PDFs into a single job).
+  - Fallback engine: Tesseract (+ Poppler `pdftoppm` for PDFs).
+  - Response includes `X-Conversion-Engine`.
 
 ### Infrastructure
 - Set up object storage (Oracle Cloud)
@@ -104,6 +206,30 @@
 - Configure production environment
 - Implement monitoring and alerting
 - Deploy to production
+
+## Recommended Next Steps (Post-Phase 2/3 Reality Check)
+
+### 1) Production deployment + environment hardening
+- Ensure production env vars are set for Adobe usage:
+  - `ADOBE_PDF_SERVICES_ENABLED`, `USE_ADOBE_AS_PRIMARY`, `ADOBE_CLIENT_ID`, `ADOBE_CLIENT_SECRET`.
+- Confirm container runtime includes system dependencies for fallbacks:
+  - `libreoffice`, `ghostscript`, `poppler-utils`, `tesseract-ocr` + language packs.
+
+### 2) Queue + worker architecture (to prevent timeouts)
+- Introduce Redis-backed queue (Upstash or VM-hosted Redis).
+- API responsibilities:
+  - accept upload, validate, enqueue job, return job id.
+- Worker responsibilities:
+  - run conversion/OCR/compress jobs and store outputs.
+
+### 3) Storage + cleanup
+- Store outputs in object storage (Oracle Object Storage or similar).
+- Add lifecycle cleanup for temp dirs and stored outputs.
+
+### 4) Tests (minimum viable)
+- Add integration tests for most critical endpoints:
+  - `/ocr-searchable-pdf`, `/compress-pdf`, `/convert/*`.
+- Add a small set of sample fixtures and automated CI.
 
 ## Technology Stack
 

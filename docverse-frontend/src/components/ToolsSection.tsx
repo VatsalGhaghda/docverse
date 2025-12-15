@@ -84,13 +84,6 @@ const tools = [
     color: "accent" as const,
   },
   {
-    title: "PDF to HTML",
-    description: "Convert PDFs into clean HTML for the web.",
-    icon: FileCode2,
-    href: "/pdf-to-html",
-    color: "primary" as const,
-  },
-  {
     title: "Image to PDF",
     description: "Combine JPG/PNG images into a single PDF.",
     icon: ImageIcon,

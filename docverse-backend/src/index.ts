@@ -1,3 +1,5 @@
+import dotenv from "dotenv";
+dotenv.config();
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -9,10 +11,509 @@ import os from "os";
 import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import {
+  ServicePrincipalCredentials,
+  PDFServices,
+  MimeType,
+  CreatePDFJob,
+  CreatePDFResult,
+  ExportPDFJob,
+  ExportPDFParams,
+  ExportPDFTargetFormat,
+  ExportPDFResult,
+  CompressPDFJob,
+  CompressPDFResult,
+  OCRJob,
+  OCRResult,
+  OCRParams,
+  OCRSupportedLocale,
+  OCRSupportedType,
+} from "@adobe/pdfservices-node-sdk";
+
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const execFileAsync = promisify(execFile);
+
+type OfficeFormat = "word" | "excel" | "powerpoint";
+
+type PdfToOfficeFormat = "word" | "excel" | "powerpoint";
+
+interface ConversionResult {
+  pdfBytes: Buffer;
+  outputFilename: string;
+  engine: "adobe" | "libreoffice";
+}
+
+interface PdfToOfficeResult {
+  outputBytes: Buffer;
+  outputFilename: string;
+  engine: "adobe" | "libreoffice";
+  contentType: string;
+}
+
+const isAdobeEnabled = (): boolean => {
+  return (
+    process.env.ADOBE_PDF_SERVICES_ENABLED === "true" &&
+    !!process.env.ADOBE_CLIENT_ID &&
+    !!process.env.ADOBE_CLIENT_SECRET
+  );
+};
+
+const getPdfToOfficeMime = (format: PdfToOfficeFormat): string => {
+  if (format === "word") {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (format === "excel") {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+};
+
+const getPdfToOfficeExtension = (format: PdfToOfficeFormat): string => {
+  if (format === "word") return "docx";
+  if (format === "excel") return "xlsx";
+  return "pptx";
+};
+
+const getPdfToOfficeTargetFormat = (format: PdfToOfficeFormat): any => {
+  if (format === "word") return (ExportPDFTargetFormat as any).DOCX;
+  if (format === "excel") return (ExportPDFTargetFormat as any).XLSX;
+  return (ExportPDFTargetFormat as any).PPTX;
+};
+
+const streamToBuffer = async (readStream: NodeJS.ReadableStream): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  return new Promise<Buffer>((resolve, reject) => {
+    readStream.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    readStream.on("end", () => resolve(Buffer.concat(chunks)));
+    readStream.on("error", reject);
+  });
+};
+
+const ocrWithAdobe = async (pdfBytes: Buffer, uiLanguage: string): Promise<Buffer> => {
+  if (!isAdobeEnabled()) {
+    throw new Error("Adobe PDF Services is not enabled");
+  }
+
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-adobe-ocr-"));
+  const inputPath = path.join(tempDir, "input.pdf");
+  await fs.promises.writeFile(inputPath, pdfBytes);
+
+  let readStream: fs.ReadStream | undefined;
+  try {
+    const clientId = process.env.ADOBE_CLIENT_ID;
+    const clientSecret = process.env.ADOBE_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      throw new Error("Adobe client credentials are not configured");
+    }
+
+    const credentials = new ServicePrincipalCredentials({ clientId, clientSecret });
+    const pdfServices = new PDFServices({ credentials });
+    const anyPdfServices = pdfServices as any;
+
+    readStream = fs.createReadStream(inputPath);
+    const inputAsset = await anyPdfServices.upload({
+      readStream,
+      mimeType: (MimeType as any).PDF,
+    });
+
+    const localeMap: Record<string, string[]> = {
+      en: ["EN_US"],
+      es: ["ES_ES", "ES_MX"],
+      fr: ["FR_FR"],
+      de: ["DE_DE"],
+      it: ["IT_IT"],
+      pt: ["PT_BR", "PT_PT"],
+      zh: ["ZH_CN", "ZH_TW"],
+      ja: ["JA_JP"],
+      ko: ["KO_KR"],
+      ar: ["AR_SA"],
+    };
+
+    const localeEnum = OCRSupportedLocale as any;
+    const supportedTypeEnum = OCRSupportedType as any;
+
+    let ocrLocale: any | undefined;
+    for (const candidate of localeMap[uiLanguage] || []) {
+      if (localeEnum && localeEnum[candidate]) {
+        ocrLocale = localeEnum[candidate];
+        break;
+      }
+    }
+
+    const ocrType =
+      (supportedTypeEnum && supportedTypeEnum.SEARCHABLE_IMAGE_EXACT) ||
+      (supportedTypeEnum && supportedTypeEnum.SEARCHABLE_IMAGE) ||
+      undefined;
+
+    const params =
+      ocrLocale || ocrType
+        ? new (OCRParams as any)({
+            ...(ocrLocale ? { ocrLocale } : {}),
+            ...(ocrType ? { ocrType } : {}),
+          })
+        : undefined;
+
+    const job = params
+      ? new (OCRJob as any)({ inputAsset, params })
+      : new (OCRJob as any)({ inputAsset });
+
+    const pollingURL: string = await anyPdfServices.submit({ job });
+    const ocrResult = (await anyPdfServices.getJobResult({
+      pollingURL,
+      resultType: OCRResult as any,
+    })) as any;
+
+    const resultAsset = ocrResult.result.asset;
+
+    if (typeof anyPdfServices.getContent === "function") {
+      const streamAsset = await anyPdfServices.getContent({ asset: resultAsset });
+      return await streamToBuffer(streamAsset.readStream);
+    }
+
+    const resultStream: AsyncIterable<Buffer | string> = await anyPdfServices.download({
+      asset: resultAsset,
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of resultStream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } finally {
+    try {
+      readStream?.destroy();
+    } catch {
+    }
+    try {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+};
+
+const convertPdfToOfficeWithAdobe = async (
+  format: PdfToOfficeFormat,
+  file: Express.Multer.File
+): Promise<PdfToOfficeResult> => {
+  if (!isAdobeEnabled()) {
+    throw new Error("Adobe PDF Services is not enabled");
+  }
+
+  const originalName = file.originalname || "document.pdf";
+  const dotIndex = originalName.lastIndexOf(".");
+  const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
+  const ext = getPdfToOfficeExtension(format);
+  const outputFilename = `${base}.${ext}`;
+
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-adobe-export-"));
+  const inputPath = path.join(tempDir, originalName);
+  await fs.promises.writeFile(inputPath, file.buffer);
+
+  let readStream: fs.ReadStream | undefined;
+  try {
+    const clientId = process.env.ADOBE_CLIENT_ID;
+    const clientSecret = process.env.ADOBE_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      throw new Error("Adobe client credentials are not configured");
+    }
+
+    const credentials = new ServicePrincipalCredentials({ clientId, clientSecret });
+    const pdfServices = new PDFServices({ credentials });
+    const anyPdfServices = pdfServices as any;
+
+    readStream = fs.createReadStream(inputPath);
+    const inputAsset = await anyPdfServices.upload({
+      readStream,
+      mimeType: (MimeType as any).PDF,
+    });
+
+    const params = new (ExportPDFParams as any)({
+      targetFormat: getPdfToOfficeTargetFormat(format),
+    });
+
+    const job = new (ExportPDFJob as any)({ inputAsset, params });
+
+    const pollingURL: string = await anyPdfServices.submit({ job });
+    const result = (await anyPdfServices.getJobResult({
+      pollingURL,
+      resultType: ExportPDFResult as any,
+    })) as any;
+
+    const resultAsset = result.result.asset;
+
+    if (typeof anyPdfServices.getContent === "function") {
+      const streamAsset = await anyPdfServices.getContent({ asset: resultAsset });
+      const outputBytes = await streamToBuffer(streamAsset.readStream);
+      return {
+        outputBytes,
+        outputFilename,
+        engine: "adobe",
+        contentType: getPdfToOfficeMime(format),
+      };
+    }
+
+    const resultStream: AsyncIterable<Buffer | string> = await anyPdfServices.download({
+      asset: resultAsset,
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of resultStream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+
+    return {
+      outputBytes: Buffer.concat(chunks),
+      outputFilename,
+      engine: "adobe",
+      contentType: getPdfToOfficeMime(format),
+    };
+  } finally {
+    try {
+      readStream?.destroy();
+    } catch {
+    }
+    try {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+};
+
+const convertPdfToOfficeWithLibreOffice = async (
+  format: PdfToOfficeFormat,
+  file: Express.Multer.File
+): Promise<PdfToOfficeResult> => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "docverse-pdf-office-"));
+
+  const originalName = file.originalname || "document.pdf";
+  const dotIndex = originalName.lastIndexOf(".");
+  const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
+
+  const inputPath = path.join(tempDir, originalName);
+  await fs.promises.writeFile(inputPath, file.buffer);
+
+  const ext = getPdfToOfficeExtension(format);
+  const outputFilename = `${base}.${ext}`;
+  const outputPath = path.join(tempDir, outputFilename);
+
+  try {
+    await execFileAsync("soffice", [
+      "--headless",
+      "--convert-to",
+      ext,
+      "--outdir",
+      tempDir,
+      inputPath,
+    ]);
+
+    const outputBytes = await fs.promises.readFile(outputPath);
+    return {
+      outputBytes,
+      outputFilename,
+      engine: "libreoffice",
+      contentType: getPdfToOfficeMime(format),
+    };
+  } finally {
+    try {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+};
+
+const convertPdfToOffice = async (
+  format: PdfToOfficeFormat,
+  file: Express.Multer.File
+): Promise<PdfToOfficeResult> => {
+  const useAdobeAsPrimary = process.env.USE_ADOBE_AS_PRIMARY === "true";
+
+  if (useAdobeAsPrimary && isAdobeEnabled()) {
+    try {
+      return await convertPdfToOfficeWithAdobe(format, file);
+    } catch (error) {
+      console.error("Adobe PDF Services export failed", error);
+      return convertPdfToOfficeWithLibreOffice(format, file);
+    }
+  }
+
+  try {
+    return await convertPdfToOfficeWithLibreOffice(format, file);
+  } catch (error) {
+    console.error("LibreOffice export failed", error);
+    return convertPdfToOfficeWithAdobe(format, file);
+  }
+};
+
+const getDefaultOriginalName = (format: OfficeFormat): string => {
+  if (format === "word") return "document.docx";
+  if (format === "excel") return "spreadsheet.xlsx";
+  return "presentation.pptx";
+};
+
+const convertWithAdobe = async (
+  format: OfficeFormat,
+  file: Express.Multer.File
+): Promise<ConversionResult> => {
+  if (!isAdobeEnabled()) {
+    throw new Error("Adobe PDF Services is not enabled");
+  }
+
+  const originalName = file.originalname || getDefaultOriginalName(format);
+  const dotIndex = originalName.lastIndexOf(".");
+  const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
+
+  // Write buffer to a temporary file because the SDK works with file paths/streams
+  const tempDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "docverse-adobe-")
+  );
+  const inputPath = path.join(tempDir, originalName);
+  await fs.promises.writeFile(inputPath, file.buffer);
+
+  try {
+    const clientId = process.env.ADOBE_CLIENT_ID;
+    const clientSecret = process.env.ADOBE_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      throw new Error("Adobe client credentials are not configured");
+    }
+
+    const credentials = new ServicePrincipalCredentials({
+      clientId,
+      clientSecret,
+    });
+
+    const pdfServices = new PDFServices({ credentials });
+
+    const ext = path.extname(originalName).toLowerCase();
+    let mimeType: MimeType;
+    if (ext === ".doc" || ext === ".docx") {
+      mimeType = MimeType.DOCX;
+    } else if (ext === ".xls" || ext === ".xlsx") {
+      mimeType = MimeType.XLSX;
+    } else if (ext === ".ppt" || ext === ".pptx") {
+      mimeType = MimeType.PPTX;
+    } else {
+      // Fallback: try as DOCX
+      mimeType = MimeType.DOCX;
+    }
+
+    const readStream = fs.createReadStream(inputPath);
+
+    // The official SDK examples are written in JS and the published
+    // TypeScript types are slightly restrictive. Use `any` casts around
+    // the SDK calls so we can follow the documented calling pattern.
+    const anyPdfServices = pdfServices as any;
+
+    const inputAsset = await anyPdfServices.upload({ readStream, mimeType });
+
+    const createPDFJob = new (CreatePDFJob as any)({ inputAsset });
+
+    // For SDK v4.1.0, use submit + getJobResult with an options object.
+    const pollingURL: string = await anyPdfServices.submit({ job: createPDFJob });
+    const pdfResult = (await anyPdfServices.getJobResult({
+      pollingURL,
+      resultType: CreatePDFResult as any,
+    })) as any;
+
+    const resultAsset = pdfResult.result.asset;
+
+    if (typeof anyPdfServices.getContent === "function") {
+      const streamAsset = await anyPdfServices.getContent({ asset: resultAsset });
+      const pdfBytes = await streamToBuffer(streamAsset.readStream);
+
+      return {
+        pdfBytes,
+        outputFilename: `${base}.pdf`,
+        engine: "adobe",
+      };
+    } else {
+      const resultStream: AsyncIterable<Buffer | string> = await anyPdfServices.download({
+        asset: resultAsset,
+      });
+      const chunks: Buffer[] = [];
+      for await (const chunk of resultStream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+
+      const pdfBytes = Buffer.concat(chunks);
+
+      return {
+        pdfBytes,
+        outputFilename: `${base}.pdf`,
+        engine: "adobe",
+      };
+    }
+  } finally {
+    try {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+};
+
+const convertWithLibreOffice = async (
+  format: OfficeFormat,
+  file: Express.Multer.File
+): Promise<ConversionResult> => {
+  const tempDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "docverse-office-")
+  );
+
+  const originalName = file.originalname || getDefaultOriginalName(format);
+  const dotIndex = originalName.lastIndexOf(".");
+  const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
+  const inputPath = path.join(tempDir, originalName);
+
+  await fs.promises.writeFile(inputPath, file.buffer);
+
+  try {
+    await execFileAsync("soffice", [
+      "--headless",
+      "--convert-to",
+      "pdf",
+      "--outdir",
+      tempDir,
+      inputPath,
+    ]);
+
+    const outputPath = path.join(tempDir, `${base}.pdf`);
+    const pdfBytes = await fs.promises.readFile(outputPath);
+
+    return {
+      pdfBytes,
+      outputFilename: `${base}.pdf`,
+      engine: "libreoffice",
+    };
+  } finally {
+    try {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+};
+
+const convertOfficeToPdf = async (
+  format: OfficeFormat,
+  file: Express.Multer.File
+): Promise<ConversionResult> => {
+  const useAdobeAsPrimary = process.env.USE_ADOBE_AS_PRIMARY === "true";
+
+  if (useAdobeAsPrimary && isAdobeEnabled()) {
+    try {
+      return await convertWithAdobe(format, file);
+    } catch (error) {
+      console.error("Adobe PDF Services conversion failed", error);
+      return convertWithLibreOffice(format, file);
+    }
+  }
+
+  // Default: use LibreOffice as primary (and only) engine
+  return convertWithLibreOffice(format, file);
+};
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -192,6 +693,36 @@ app.post("/ocr-searchable-pdf", upload.array("files", 10), async (req: Request, 
     const perPagePdfPaths: string[] = [];
     const tempRoots: string[] = [];
 
+    const useAdobeAsPrimary = process.env.USE_ADOBE_AS_PRIMARY === "true";
+
+    const allArePdf = files.every((file) => {
+      const lowerName = (file.originalname || "").toLowerCase();
+      return file.mimetype === "application/pdf" || lowerName.endsWith(".pdf");
+    });
+
+    if (useAdobeAsPrimary && isAdobeEnabled() && allArePdf) {
+      try {
+        const mergedPdf = await PDFDocument.create();
+        for (const file of files) {
+          const pdf = await PDFDocument.load(file.buffer);
+          const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+          copiedPages.forEach((page) => mergedPdf.addPage(page));
+        }
+        const mergedBytes = await mergedPdf.save();
+        const searchablePdfBytes = await ocrWithAdobe(Buffer.from(mergedBytes), uiLanguage);
+
+        const filename = "ocr-searchable.pdf";
+        return res
+          .status(200)
+          .contentType("application/pdf")
+          .setHeader("X-Conversion-Engine", "adobe")
+          .setHeader("Content-Disposition", `attachment; filename=${filename}`)
+          .send(Buffer.from(searchablePdfBytes));
+      } catch (adobeErr) {
+        console.error("Adobe OCR failed, falling back to Tesseract pipeline", adobeErr);
+      }
+    }
+
     try {
       for (const [index, file] of files.entries()) {
         const originalName = file.originalname || `file-${index + 1}`;
@@ -273,6 +804,7 @@ app.post("/ocr-searchable-pdf", upload.array("files", 10), async (req: Request, 
       res
         .status(200)
         .contentType("application/pdf")
+        .setHeader("X-Conversion-Engine", "tesseract")
         .setHeader("Content-Disposition", `attachment; filename=${filename}`)
         .send(Buffer.from(finalBytes));
     } catch (err) {
@@ -500,14 +1032,107 @@ app.post("/compress-pdf", upload.array("files", 10), async (req: Request, res: R
       }
     };
 
+    // Helper to compress a PDF using Adobe PDF Services Compress PDF
+    const compressWithAdobe = async (file: Express.Multer.File): Promise<Buffer> => {
+      if (!isAdobeEnabled()) {
+        throw new Error("Adobe PDF Services is not enabled");
+      }
+
+      const originalName = file.originalname || "document.pdf";
+
+      const tempDir = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "docverse-adobe-compress-")
+      );
+      const inputPath = path.join(tempDir, originalName);
+      await fs.promises.writeFile(inputPath, file.buffer);
+
+      let readStream: fs.ReadStream | undefined;
+      try {
+        const clientId = process.env.ADOBE_CLIENT_ID;
+        const clientSecret = process.env.ADOBE_CLIENT_SECRET;
+
+        if (!clientId || !clientSecret) {
+          throw new Error("Adobe client credentials are not configured");
+        }
+
+        const credentials = new ServicePrincipalCredentials({ clientId, clientSecret });
+        const pdfServices = new PDFServices({ credentials });
+        const anyPdfServices = pdfServices as any;
+
+        readStream = fs.createReadStream(inputPath);
+        const inputAsset = await anyPdfServices.upload({
+          readStream,
+          mimeType: (MimeType as any).PDF,
+        });
+
+        const job = new (CompressPDFJob as any)({ inputAsset });
+
+        const pollingURL: string = await anyPdfServices.submit({ job });
+        const pdfResult = (await anyPdfServices.getJobResult({
+          pollingURL,
+          resultType: CompressPDFResult as any,
+        })) as any;
+
+        const resultAsset = pdfResult.result.asset;
+
+        if (typeof anyPdfServices.getContent === "function") {
+          const streamAsset = await anyPdfServices.getContent({ asset: resultAsset });
+          const pdfBytes = await streamToBuffer(streamAsset.readStream);
+          return pdfBytes;
+        }
+
+        const resultStream: AsyncIterable<Buffer | string> = await anyPdfServices.download({
+          asset: resultAsset,
+        });
+        const chunks: Buffer[] = [];
+        for await (const chunk of resultStream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks);
+      } finally {
+        try {
+          readStream?.destroy();
+        } catch {
+        }
+        try {
+          await fs.promises.rm(tempDir, { recursive: true, force: true });
+        } catch {
+        }
+      }
+    };
+
+    const useAdobeAsPrimary = process.env.USE_ADOBE_AS_PRIMARY === "true";
+
+    const compressFile = async (
+      file: Express.Multer.File
+    ): Promise<{ bytes: Buffer; engine: "adobe" | "ghostscript" }> => {
+      if (useAdobeAsPrimary && isAdobeEnabled()) {
+        try {
+          const adobeBytes = await compressWithAdobe(file);
+          const chosenBytes =
+            adobeBytes.length >= file.buffer.length ? file.buffer : adobeBytes;
+          return { bytes: chosenBytes, engine: "adobe" };
+        } catch (error) {
+          console.error("Adobe PDF Services compression failed", error);
+          const gsBytes = await compressWithGhostscript(file.buffer);
+          const chosenBytes =
+            gsBytes.length >= file.buffer.length ? file.buffer : gsBytes;
+          return { bytes: chosenBytes, engine: "ghostscript" };
+        }
+      }
+
+      const gsBytes = await compressWithGhostscript(file.buffer);
+      const chosenBytes =
+        gsBytes.length >= file.buffer.length ? file.buffer : gsBytes;
+      return { bytes: chosenBytes, engine: "ghostscript" };
+    };
+
     // If only a single file is uploaded, return a single compressed PDF instead of a ZIP.
-    // If Ghostscript does not actually reduce size, fall back to the original bytes so the
+    // If compression does not actually reduce size, fall back to the original bytes so the
     // file is never larger than the input.
     if (files.length === 1) {
       const file = files[0];
-      const compressedBytes = await compressWithGhostscript(file.buffer);
-      const chosenBytes =
-        compressedBytes.length >= file.buffer.length ? file.buffer : compressedBytes;
+      const { bytes, engine } = await compressFile(file);
 
       const originalName = file.originalname || "document.pdf";
       const dotIndex = originalName.lastIndexOf(".");
@@ -517,32 +1142,35 @@ app.post("/compress-pdf", upload.array("files", 10), async (req: Request, res: R
       return res
         .status(200)
         .contentType("application/pdf")
+        .setHeader("X-Conversion-Engine", engine)
         .setHeader("Content-Disposition", `attachment; filename=${compressedName}`)
-        .send(Buffer.from(chosenBytes));
+        .send(Buffer.from(bytes));
     }
 
     // Multiple files: compress each and return a ZIP archive. For each file, if
-    // Ghostscript does not reduce size, fall back to the original bytes.
+    // compression does not reduce size, fall back to the original bytes.
     const zip = new JSZip();
+    const engines = new Set<string>();
 
     for (const file of files) {
-      const compressedBytes = await compressWithGhostscript(file.buffer);
-      const chosenBytes =
-        compressedBytes.length >= file.buffer.length ? file.buffer : compressedBytes;
+      const { bytes, engine } = await compressFile(file);
 
       const originalName = file.originalname || "document.pdf";
       const dotIndex = originalName.lastIndexOf(".");
       const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
       const compressedName = `${base}-compressed.pdf`;
 
-      zip.file(compressedName, chosenBytes);
+      zip.file(compressedName, bytes);
+      engines.add(engine);
     }
 
     const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
       .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
       .setHeader("Content-Disposition", "attachment; filename=compressed-pdfs.zip")
       .send(zipBytes);
   } catch (error) {
@@ -555,34 +1183,65 @@ app.post("/compress-pdf", upload.array("files", 10), async (req: Request, res: R
   }
 });
 
-app.post("/convert/pdf-to-word", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/convert/pdf-to-word", upload.array("files", 10), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const files = req.files as Express.Multer.File[] | undefined;
 
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Please upload a PDF file to convert.",
+        message: "Please upload at least one PDF file to convert.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    const maxTotal = 100 * 1024 * 1024;
+
+    if (totalSize > maxTotal) {
       return res.status(413).json({
         status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
+        message: "Total size of uploaded files exceeds 100MB.",
       });
     }
 
-    const originalName = file.originalname || "document.pdf";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const convertedName = `${base}.docx`;
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
+    }
+
+    if (files.length === 1) {
+      const file = files[0];
+      const { outputBytes, outputFilename, engine, contentType } = await convertPdfToOffice("word", file);
+      return res
+        .status(200)
+        .contentType(contentType)
+        .setHeader("X-Conversion-Engine", engine)
+        .setHeader("Content-Disposition", `attachment; filename=${outputFilename}`)
+        .send(outputBytes);
+    }
+
+    const zip = new JSZip();
+    const engines = new Set<string>();
+
+    for (const file of files) {
+      const { outputBytes, outputFilename, engine } = await convertPdfToOffice("word", file);
+      zip.file(outputFilename, outputBytes);
+      engines.add(engine);
+    }
+
+    const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
-      .contentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-      .setHeader("Content-Disposition", `attachment; filename=${convertedName}`)
-      .send(file.buffer);
+      .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
+      .setHeader("Content-Disposition", "attachment; filename=converted-word-docs.zip")
+      .send(zipBytes);
   } catch (error) {
     console.error("Error in PDF to Word conversion", error);
     res.status(500).json({
@@ -592,34 +1251,65 @@ app.post("/convert/pdf-to-word", upload.single("file"), async (req: Request, res
   }
 });
 
-app.post("/convert/pdf-to-excel", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/convert/pdf-to-excel", upload.array("files", 10), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const files = req.files as Express.Multer.File[] | undefined;
 
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Please upload a PDF file to convert.",
+        message: "Please upload at least one PDF file to convert.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    const maxTotal = 100 * 1024 * 1024;
+
+    if (totalSize > maxTotal) {
       return res.status(413).json({
         status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
+        message: "Total size of uploaded files exceeds 100MB.",
       });
     }
 
-    const originalName = file.originalname || "document.pdf";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const convertedName = `${base}.xlsx`;
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
+    }
+
+    if (files.length === 1) {
+      const file = files[0];
+      const { outputBytes, outputFilename, engine, contentType } = await convertPdfToOffice("excel", file);
+      return res
+        .status(200)
+        .contentType(contentType)
+        .setHeader("X-Conversion-Engine", engine)
+        .setHeader("Content-Disposition", `attachment; filename=${outputFilename}`)
+        .send(outputBytes);
+    }
+
+    const zip = new JSZip();
+    const engines = new Set<string>();
+
+    for (const file of files) {
+      const { outputBytes, outputFilename, engine } = await convertPdfToOffice("excel", file);
+      zip.file(outputFilename, outputBytes);
+      engines.add(engine);
+    }
+
+    const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
-      .contentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-      .setHeader("Content-Disposition", `attachment; filename=${convertedName}`)
-      .send(file.buffer);
+      .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
+      .setHeader("Content-Disposition", "attachment; filename=converted-excel-sheets.zip")
+      .send(zipBytes);
   } catch (error) {
     console.error("Error in PDF to Excel conversion", error);
     res.status(500).json({
@@ -629,34 +1319,65 @@ app.post("/convert/pdf-to-excel", upload.single("file"), async (req: Request, re
   }
 });
 
-app.post("/convert/pdf-to-powerpoint", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/convert/pdf-to-powerpoint", upload.array("files", 10), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const files = req.files as Express.Multer.File[] | undefined;
 
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Please upload a PDF file to convert.",
+        message: "Please upload at least one PDF file to convert.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    const maxTotal = 100 * 1024 * 1024;
+
+    if (totalSize > maxTotal) {
       return res.status(413).json({
         status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
+        message: "Total size of uploaded files exceeds 100MB.",
       });
     }
 
-    const originalName = file.originalname || "document.pdf";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const convertedName = `${base}.pptx`;
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
+    }
+
+    if (files.length === 1) {
+      const file = files[0];
+      const { outputBytes, outputFilename, engine, contentType } = await convertPdfToOffice("powerpoint", file);
+      return res
+        .status(200)
+        .contentType(contentType)
+        .setHeader("X-Conversion-Engine", engine)
+        .setHeader("Content-Disposition", `attachment; filename=${outputFilename}`)
+        .send(outputBytes);
+    }
+
+    const zip = new JSZip();
+    const engines = new Set<string>();
+
+    for (const file of files) {
+      const { outputBytes, outputFilename, engine } = await convertPdfToOffice("powerpoint", file);
+      zip.file(outputFilename, outputBytes);
+      engines.add(engine);
+    }
+
+    const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
-      .contentType("application/vnd.openxmlformats-officedocument.presentationml.presentation")
-      .setHeader("Content-Disposition", `attachment; filename=${convertedName}`)
-      .send(file.buffer);
+      .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
+      .setHeader("Content-Disposition", "attachment; filename=converted-powerpoint-slides.zip")
+      .send(zipBytes);
   } catch (error) {
     console.error("Error in PDF to PowerPoint conversion", error);
     res.status(500).json({
@@ -666,34 +1387,56 @@ app.post("/convert/pdf-to-powerpoint", upload.single("file"), async (req: Reques
   }
 });
 
-app.post("/convert/word-to-pdf", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/convert/word-to-pdf", upload.array("files", 10), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const files = req.files as Express.Multer.File[] | undefined;
 
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Please upload a Word document to convert.",
+        message: "Please upload at least one Word document to convert.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
-      return res.status(413).json({
-        status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
-      });
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
     }
 
-    const originalName = file.originalname || "document.docx";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const convertedName = `${base}.pdf`;
+    if (files.length === 1) {
+      const file = files[0];
+      const { pdfBytes, outputFilename, engine } = await convertOfficeToPdf("word", file);
+
+      return res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("X-Conversion-Engine", engine)
+        .setHeader("Content-Disposition", `attachment; filename=${outputFilename}`)
+        .send(pdfBytes);
+    }
+
+    const zip = new JSZip();
+    const engines = new Set<string>();
+
+    for (const file of files) {
+      const { pdfBytes, outputFilename, engine } = await convertOfficeToPdf("word", file);
+      zip.file(outputFilename, pdfBytes);
+      engines.add(engine);
+    }
+
+    const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
-      .contentType("application/pdf")
-      .setHeader("Content-Disposition", `attachment; filename=${convertedName}`)
-      .send(file.buffer);
+      .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
+      .setHeader("Content-Disposition", "attachment; filename=converted-word-pdfs.zip")
+      .send(zipBytes);
   } catch (error) {
     console.error("Error in Word to PDF conversion", error);
     res.status(500).json({
@@ -703,34 +1446,56 @@ app.post("/convert/word-to-pdf", upload.single("file"), async (req: Request, res
   }
 });
 
-app.post("/convert/excel-to-pdf", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/convert/excel-to-pdf", upload.array("files", 10), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const files = req.files as Express.Multer.File[] | undefined;
 
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Please upload an Excel workbook to convert.",
+        message: "Please upload at least one Excel workbook to convert.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
-      return res.status(413).json({
-        status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
-      });
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
     }
 
-    const originalName = file.originalname || "spreadsheet.xlsx";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const convertedName = `${base}.pdf`;
+    if (files.length === 1) {
+      const file = files[0];
+      const { pdfBytes, outputFilename, engine } = await convertOfficeToPdf("excel", file);
+
+      return res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("X-Conversion-Engine", engine)
+        .setHeader("Content-Disposition", `attachment; filename=${outputFilename}`)
+        .send(pdfBytes);
+    }
+
+    const zip = new JSZip();
+    const engines = new Set<string>();
+
+    for (const file of files) {
+      const { pdfBytes, outputFilename, engine } = await convertOfficeToPdf("excel", file);
+      zip.file(outputFilename, pdfBytes);
+      engines.add(engine);
+    }
+
+    const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
-      .contentType("application/pdf")
-      .setHeader("Content-Disposition", `attachment; filename=${convertedName}`)
-      .send(file.buffer);
+      .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
+      .setHeader("Content-Disposition", "attachment; filename=converted-excel-pdfs.zip")
+      .send(zipBytes);
   } catch (error) {
     console.error("Error in Excel to PDF conversion", error);
     res.status(500).json({
@@ -740,34 +1505,56 @@ app.post("/convert/excel-to-pdf", upload.single("file"), async (req: Request, re
   }
 });
 
-app.post("/convert/powerpoint-to-pdf", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/convert/powerpoint-to-pdf", upload.array("files", 10), async (req: Request, res: Response) => {
   try {
-    const file = req.file as Express.Multer.File | undefined;
+    const files = req.files as Express.Multer.File[] | undefined;
 
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         status: "error",
-        message: "Please upload a PowerPoint presentation to convert.",
+        message: "Please upload at least one PowerPoint presentation to convert.",
       });
     }
 
-    if (file.size > 100 * 1024 * 1024) {
-      return res.status(413).json({
-        status: "error",
-        message: "Uploaded file exceeds 100MB limit.",
-      });
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Uploaded file exceeds 100MB limit.",
+        });
+      }
     }
 
-    const originalName = file.originalname || "presentation.pptx";
-    const dotIndex = originalName.lastIndexOf(".");
-    const base = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-    const convertedName = `${base}.pdf`;
+    if (files.length === 1) {
+      const file = files[0];
+      const { pdfBytes, outputFilename, engine } = await convertOfficeToPdf("powerpoint", file);
+
+      return res
+        .status(200)
+        .contentType("application/pdf")
+        .setHeader("X-Conversion-Engine", engine)
+        .setHeader("Content-Disposition", `attachment; filename=${outputFilename}`)
+        .send(pdfBytes);
+    }
+
+    const zip = new JSZip();
+    const engines = new Set<string>();
+
+    for (const file of files) {
+      const { pdfBytes, outputFilename, engine } = await convertOfficeToPdf("powerpoint", file);
+      zip.file(outputFilename, pdfBytes);
+      engines.add(engine);
+    }
+
+    const zipBytes = await zip.generateAsync({ type: "nodebuffer" });
+    const engineHeader = engines.size === 1 ? Array.from(engines)[0] : "mixed";
 
     res
       .status(200)
-      .contentType("application/pdf")
-      .setHeader("Content-Disposition", `attachment; filename=${convertedName}`)
-      .send(file.buffer);
+      .contentType("application/zip")
+      .setHeader("X-Conversion-Engine", engineHeader)
+      .setHeader("Content-Disposition", "attachment; filename=converted-powerpoint-pdfs.zip")
+      .send(zipBytes);
   } catch (error) {
     console.error("Error in PowerPoint to PDF conversion", error);
     res.status(500).json({

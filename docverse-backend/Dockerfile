@@ -8,6 +8,16 @@ RUN apt-get update && \
       poppler-utils \
       tesseract-ocr \
       tesseract-ocr-eng \
+      tesseract-ocr-spa \
+      tesseract-ocr-fra \
+      tesseract-ocr-deu \
+      tesseract-ocr-ita \
+      tesseract-ocr-por \
+      tesseract-ocr-chi-sim \
+      tesseract-ocr-jpn \
+      tesseract-ocr-kor \
+      tesseract-ocr-ara \
+      libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

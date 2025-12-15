@@ -10,20 +10,19 @@ export default function PDFToExcel() {
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadKind, setDownloadKind] = useState<"single" | "zip" | null>(null);
   const [uploadKey, setUploadKey] = useState(0);
   const [progress, setProgress] = useState(0);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const uploadRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
 
-  const activeFile = files[0]?.file as File | undefined;
-
-  const allReady = files.length === 1 && files[0].status === "complete";
+  const allReady = files.length >= 1 && files.every((f: any) => f.status === "complete");
 
   const handleProcess = async () => {
     const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
-    if (!allReady || !activeFile) return;
+    if (!allReady || files.length === 0) return;
 
     setIsProcessing(true);
     setIsComplete(false);
@@ -31,7 +30,12 @@ export default function PDFToExcel() {
     setProgress(8);
 
     const formData = new FormData();
-    formData.append("file", activeFile, activeFile.name ?? "document.pdf");
+    files.forEach((item: any) => {
+      const file = item.file as File | undefined;
+      if (file) {
+        formData.append("files", file, file.name ?? "document.pdf");
+      }
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -54,6 +58,11 @@ export default function PDFToExcel() {
           if (xhr.status >= 200 && xhr.status < 300) {
             const blob = xhr.response as Blob;
             const url = URL.createObjectURL(blob);
+            const contentType = xhr.getResponseHeader("Content-Type") || "";
+            const kind: "single" | "zip" = contentType.toLowerCase().includes("zip")
+              ? "zip"
+              : "single";
+            setDownloadKind(kind);
             setDownloadUrl(url);
             setProgress(100);
             setIsComplete(true);
@@ -82,6 +91,7 @@ export default function PDFToExcel() {
     setFiles([]);
     setIsComplete(false);
     setError(null);
+    setDownloadKind(null);
     if (downloadUrl) {
       URL.revokeObjectURL(downloadUrl);
       setDownloadUrl(null);
@@ -92,15 +102,23 @@ export default function PDFToExcel() {
   };
 
   useEffect(() => {
-    if (files.length > 0 && previewRef.current) {
-      previewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (!files.length || !uploadRef.current) return;
+    const rect = uploadRef.current.getBoundingClientRect();
+    const offset = window.scrollY + rect.top + 50;
+    window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
   }, [files.length]);
+
+  useEffect(() => {
+    if (!allReady || !previewRef.current) return;
+    const rect = previewRef.current.getBoundingClientRect();
+    const offset = window.scrollY + rect.top - 80;
+    window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+  }, [allReady]);
 
   useEffect(() => {
     if (isProcessing && !isComplete && loadingRef.current) {
       const rect = loadingRef.current.getBoundingClientRect();
-      const offset = window.scrollY + rect.top - 180;
+      const offset = window.scrollY + rect.top - 120;
       window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
     }
   }, [isProcessing, isComplete]);
@@ -134,8 +152,11 @@ export default function PDFToExcel() {
                 <FileUploadZone
                   key={uploadKey}
                   accept=".pdf"
-                  multiple={false}
-                  maxFiles={1}
+                  multiple
+                  maxFiles={5}
+                  variant="secondary"
+                  iconType="excel"
+                  horizontalScroll={false}
                   onFilesChange={setFiles}
                 />
               </div>
@@ -157,7 +178,7 @@ export default function PDFToExcel() {
                       onClick={handleProcess}
                       disabled={isProcessing || !allReady}
                     >
-                      Convert PDF to Excel
+                      Convert {files.length} PDF{files.length === 1 ? "" : "s"} to Excel
                       <ArrowRight className="h-5 w-5" />
                     </Button>
                     <Button variant="ghost" onClick={handleReset}>
@@ -176,7 +197,8 @@ export default function PDFToExcel() {
             </div>
             <h2 className="text-2xl font-bold mb-2">Conversion Complete!</h2>
             <p className="text-muted-foreground mb-8">
-              Your PDF data has been converted to Excel (.xlsx).
+              Your PDF file{files.length === 1 ? "" : "s"} ha
+              {files.length === 1 ? "s" : "ve"} been converted to Excel.
             </p>
             <div className="flex flex-col items-center gap-4">
               <Button
@@ -186,8 +208,12 @@ export default function PDFToExcel() {
                   if (!downloadUrl) return;
                   const link = document.createElement("a");
                   link.href = downloadUrl;
-                  const baseName = (files[0]?.name || "document").replace(/\.pdf$/i, "");
-                  link.download = `${baseName}.xlsx`;
+                  if (downloadKind === "zip" || files.length > 1) {
+                    link.download = "converted-excel-sheets.zip";
+                  } else {
+                    const baseName = (files[0]?.name || "document").replace(/\.pdf$/i, "");
+                    link.download = `${baseName}.xlsx`;
+                  }
                   document.body.appendChild(link);
                   link.click();
                   document.body.removeChild(link);
@@ -195,7 +221,9 @@ export default function PDFToExcel() {
                 disabled={!downloadUrl}
               >
                 <Download className="h-5 w-5 mr-2" />
-                Download Excel File
+                {downloadKind === "zip" || files.length > 1
+                  ? "Download Excel Files (ZIP)"
+                  : "Download Excel File"}
               </Button>
               <Button variant="outline" onClick={handleReset}>
                 Convert more PDFs

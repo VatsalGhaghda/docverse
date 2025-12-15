@@ -17,7 +17,6 @@ const tools = [
   { name: "PDF to Word", href: "/pdf-to-word", icon: "📄" },
   { name: "PDF to Excel", href: "/pdf-to-excel", icon: "📊" },
   { name: "PDF to PowerPoint", href: "/pdf-to-powerpoint", icon: "📽️" },
-  { name: "PDF to HTML", href: "/pdf-to-html", icon: "🌐" },
   { name: "Image to PDF", href: "/image-to-pdf", icon: "🖼️" },
   { name: "PDF to Image", href: "/pdf-to-image", icon: "🖼️" },
   { name: "OCR", href: "/ocr", icon: "👁️" },

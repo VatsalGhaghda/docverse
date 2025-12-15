@@ -10,19 +10,19 @@ export default function WordToPDF() {
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadKind, setDownloadKind] = useState<"pdf" | "zip" | null>(null);
   const [uploadKey, setUploadKey] = useState(0);
   const [progress, setProgress] = useState(0);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const uploadRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
 
-  const activeFile = files[0]?.file as File | undefined;
-  const allReady = files.length === 1 && files[0].status === "complete";
+  const allReady = files.length >= 1 && files.every((f: any) => f.status === "complete");
 
   const handleProcess = async () => {
     const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
-    if (!allReady || !activeFile) return;
+    if (!allReady || files.length === 0) return;
 
     setIsProcessing(true);
     setIsComplete(false);
@@ -30,7 +30,12 @@ export default function WordToPDF() {
     setProgress(8);
 
     const formData = new FormData();
-    formData.append("file", activeFile, activeFile.name ?? "document.docx");
+    files.forEach((item: any) => {
+      const file = item.file as File | undefined;
+      if (file) {
+        formData.append("files", file, file.name ?? "document.docx");
+      }
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -53,6 +58,11 @@ export default function WordToPDF() {
           if (xhr.status >= 200 && xhr.status < 300) {
             const blob = xhr.response as Blob;
             const url = URL.createObjectURL(blob);
+            const contentType = xhr.getResponseHeader("Content-Type") || "";
+            const kind: "pdf" | "zip" = contentType.toLowerCase().includes("zip")
+              ? "zip"
+              : "pdf";
+            setDownloadKind(kind);
             setDownloadUrl(url);
             setProgress(100);
             setIsComplete(true);
@@ -80,6 +90,7 @@ export default function WordToPDF() {
   const handleReset = () => {
     setFiles([]);
     setIsComplete(false);
+    setDownloadKind(null);
     setError(null);
     if (downloadUrl) {
       URL.revokeObjectURL(downloadUrl);
@@ -87,22 +98,31 @@ export default function WordToPDF() {
     }
     setUploadKey((prev) => prev + 1);
     setProgress(0);
-    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   useEffect(() => {
-    if (files.length > 0 && previewRef.current) {
-      previewRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (!files.length || !uploadRef.current) return;
+    const rect = uploadRef.current.getBoundingClientRect();
+    const offset = window.scrollY + rect.top - 180;
+    window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
   }, [files.length]);
+
+  useEffect(() => {
+    if (!allReady || !previewRef.current) return;
+    const rect = previewRef.current.getBoundingClientRect();
+    const offset = window.scrollY + rect.top - 80;
+    window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
+  }, [allReady]);
 
   useEffect(() => {
     if (isProcessing && !isComplete && loadingRef.current) {
       const rect = loadingRef.current.getBoundingClientRect();
-      const offset = window.scrollY + rect.top - 180;
+      const offset = window.scrollY + rect.top - 120;
       window.scrollTo({ top: Math.max(offset, 0), behavior: "smooth" });
     }
   }, [isProcessing, isComplete]);
+
+  const fileCount = files.length;
 
   return (
     <ToolPageLayout
@@ -133,8 +153,11 @@ export default function WordToPDF() {
                 <FileUploadZone
                   key={uploadKey}
                   accept=".doc,.docx"
-                  multiple={false}
-                  maxFiles={1}
+                  multiple
+                  maxFiles={5}
+                  variant="primary"
+                  iconType="word"
+                  horizontalScroll={false}
                   onFilesChange={setFiles}
                 />
               </div>
@@ -155,7 +178,7 @@ export default function WordToPDF() {
                       onClick={handleProcess}
                       disabled={isProcessing || !allReady}
                     >
-                      Convert Word to PDF
+                      Convert {fileCount} Word file{fileCount === 1 ? "" : "s"}
                       <ArrowRight className="h-5 w-5" />
                     </Button>
                     <Button variant="ghost" onClick={handleReset}>
@@ -174,7 +197,8 @@ export default function WordToPDF() {
             </div>
             <h2 className="text-2xl font-bold mb-2">Conversion Complete!</h2>
             <p className="text-muted-foreground mb-8">
-              Your Word document has been converted to PDF.
+              Your Word file{fileCount === 1 ? "" : "s"} ha
+              {fileCount === 1 ? "s" : "ve"} been converted to PDF.
             </p>
             <div className="flex flex-col items-center gap-4">
               <Button
@@ -184,8 +208,12 @@ export default function WordToPDF() {
                   if (!downloadUrl) return;
                   const link = document.createElement("a");
                   link.href = downloadUrl;
-                  const baseName = (files[0]?.name || "document").replace(/\.(docx?|DOCX?)$/, "");
-                  link.download = `${baseName}.pdf`;
+                  if (downloadKind === "zip" || fileCount > 1) {
+                    link.download = "converted-word-pdfs.zip";
+                  } else {
+                    const baseName = (files[0]?.name || "document").replace(/\.(docx?|DOCX?)$/, "");
+                    link.download = `${baseName}.pdf`;
+                  }
                   document.body.appendChild(link);
                   link.click();
                   document.body.removeChild(link);
@@ -193,7 +221,7 @@ export default function WordToPDF() {
                 disabled={!downloadUrl}
               >
                 <Download className="h-5 w-5 mr-2" />
-                Download PDF
+                {downloadKind === "zip" || fileCount > 1 ? "Download PDFs (ZIP)" : "Download PDF"}
               </Button>
               <Button variant="outline" onClick={handleReset}>
                 Convert more documents

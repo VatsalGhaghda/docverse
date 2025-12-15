@@ -21,7 +21,6 @@ import NotFound from "./pages/NotFound";
 import ConvertToPDF from "./pages/ConvertToPDF";
 import UnlockPDF from "./pages/UnlockPDF";
 import AddPageNumbers from "./pages/AddPageNumbers";
-import PDFToHTML from "./pages/PDFToHTML";
 import WatermarkPDF from "./pages/WatermarkPDF";
 import OrganizePDF from "./pages/OrganizePDF";
 import PDFToWord from "./pages/PDFToWord";
@@ -72,7 +71,6 @@ const App = () => (
             <Route path="/sign" element={<SignPDF />} />
             <Route path="/pdf-to-image" element={<PDFToImage />} />
             <Route path="/page-numbers" element={<AddPageNumbers />} />
-            <Route path="/pdf-to-html" element={<PDFToHTML />} />
             <Route path="/organize" element={<OrganizePDF />} />
             <Route path="/watermark" element={<WatermarkPDF />} />
             <Route path="/pricing" element={<Pricing />} />
