@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type PointerEvent } from "react";
 import { PanelsTopLeft, ArrowRight, RotateCcw, Download, RotateCw, Trash2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ToolPageLayout } from "@/components/ToolPageLayout";
@@ -25,6 +25,8 @@ export default function OrganizePDF() {
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [pages, setPages] = useState<OrganizedPage[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const dragCandidateRef = useRef<{ id: string; startX: number; startY: number } | null>(null);
   const uploadRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef<HTMLDivElement | null>(null);
@@ -156,12 +158,10 @@ export default function OrganizePDF() {
     }
   }, [isProcessing, isComplete]);
 
-  const startDrag = (id: string) => {
-    setDraggingId(id);
-  };
-
   const endDrag = () => {
     setDraggingId(null);
+    setDragOverId(null);
+    dragCandidateRef.current = null;
   };
 
   const handleDrop = (targetId: string) => {
@@ -175,6 +175,41 @@ export default function OrganizePDF() {
       updated.splice(toIndex, 0, moved);
       return updated;
     });
+  };
+
+  const handlePointerDown = (e: PointerEvent<HTMLDivElement>, id: string) => {
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    dragCandidateRef.current = { id, startX: e.clientX, startY: e.clientY };
+    setDragOverId(null);
+  };
+
+  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    const candidate = dragCandidateRef.current;
+    if (!candidate) return;
+
+    const dx = Math.abs(e.clientX - candidate.startX);
+    const dy = Math.abs(e.clientY - candidate.startY);
+
+    if (!draggingId && dx + dy >= 6) {
+      setDraggingId(candidate.id);
+    }
+
+    if (!draggingId) return;
+
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const target = el?.closest("[data-page-id]") as HTMLElement | null;
+    const targetId = target?.getAttribute("data-page-id") || null;
+    if (targetId && targetId !== draggingId) {
+      setDragOverId(targetId);
+    }
+  };
+
+  const handlePointerUp = () => {
+    if (draggingId && dragOverId && draggingId !== dragOverId) {
+      handleDrop(dragOverId);
+    }
+    endDrag();
   };
 
   const rotatePage = (id: string) => {
@@ -217,18 +252,20 @@ export default function OrganizePDF() {
     // Roughly treat every 5th item as end-of-row (matches lg:grid-cols-5 layout)
     const isEndOfRow = (index + 1) % 5 === 0;
     const showAddBlankBetween = hasRightNeighbor && !isEndOfRow;
+    const showAddBlankAtRowEnd = isEndOfRow || !hasRightNeighbor;
 
     return (
       <div
         key={page.id}
+        data-page-id={page.id}
         className={`relative rounded-xl border bg-card/80 p-2 flex flex-col items-center cursor-move transition-shadow hover:shadow-md ${
-          draggingId === page.id ? "ring-2 ring-primary/70" : ""
+          draggingId === page.id ? "ring-2 ring-primary/70" : dragOverId === page.id ? "ring-2 ring-primary/40" : ""
         }`}
-        draggable
-        onDragStart={() => startDrag(page.id)}
-        onDragEnd={endDrag}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={() => handleDrop(page.id)}
+        onPointerDown={(e) => handlePointerDown(e, page.id)}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        style={{ touchAction: draggingId ? "none" : "manipulation" }}
       >
         <div className="w-32 h-auto relative flex items-center justify-center bg-muted/40 rounded-md overflow-hidden">
           {isBlank ? (
@@ -252,6 +289,7 @@ export default function OrganizePDF() {
             type="button"
             className="h-7 w-7 rounded-full border border-border bg-background flex items-center justify-center hover:border-primary hover:bg-primary/5"
             onClick={() => rotatePage(page.id)}
+            onPointerDown={(e) => e.stopPropagation()}
             title="Rotate 90°"
           >
             <RotateCw className="h-3.5 w-3.5" />
@@ -260,6 +298,7 @@ export default function OrganizePDF() {
             type="button"
             className="h-7 w-7 rounded-full border border-border bg-background flex items-center justify-center hover:border-destructive hover:bg-destructive/10"
             onClick={() => removePage(page.id)}
+            onPointerDown={(e) => e.stopPropagation()}
             title="Remove page"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -271,6 +310,23 @@ export default function OrganizePDF() {
               type="button"
               className="group relative pointer-events-auto h-8 w-8 rounded-full border-2 border-primary bg-background flex items-center justify-center shadow-sm hover:bg-primary hover:text-primary-foreground hover:border-primary translate-x-[70%]"
               onClick={() => addBlankAfter(index)}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <span className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-popover px-2 py-1 text-[11px] font-medium text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100">
+                Add a blank page
+              </span>
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {showAddBlankAtRowEnd && (
+          <div className="hidden lg:flex absolute inset-y-0 right-0 items-center justify-center pointer-events-none z-20">
+            <button
+              type="button"
+              className="group relative pointer-events-auto h-8 w-8 rounded-full border-2 border-primary bg-background flex items-center justify-center shadow-sm hover:bg-primary hover:text-primary-foreground hover:border-primary translate-x-[30%]"
+              onClick={() => addBlankAfter(index)}
+              onPointerDown={(e) => e.stopPropagation()}
             >
               <span className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-popover px-2 py-1 text-[11px] font-medium text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100">
                 Add a blank page

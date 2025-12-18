@@ -2062,9 +2062,8 @@ app.post(
         // Compute target coordinates based on 3x3 position grid.
         // Use comfortable margins so watermark stays inside the page but can sit relatively close to edges.
         // When rotation is non-zero we are still slightly more conservative.
-        const baseMarginFactor = rotation !== 0 ? 0.13 : 0.09;
-        const marginX = width * baseMarginFactor;
-        const marginY = height * baseMarginFactor;
+        const marginX = width * 0.06;
+        const marginY = height * 0.06;
 
         const isTop = positionKey.startsWith("top-");
         const isBottom = positionKey.startsWith("bottom-");
@@ -2074,61 +2073,61 @@ app.post(
         const isRight = positionKey.endsWith("right");
         const isCenter = positionKey.endsWith("center");
 
-        let x = width / 2;
-        let y = height / 2;
+        const innerW = Math.max(0, width - marginX * 2);
+        const innerH = Math.max(0, height - marginY * 2);
+        const col = isLeft ? 0 : isRight ? 2 : 1;
+        const row = isBottom ? 0 : isTop ? 2 : 1;
 
-        if (isLeft) x = marginX;
-        if (isRight) x = width - marginX;
-        if (isCenter) x = width / 2;
+        const anchorX = marginX + ((col * 2 + 1) * innerW) / 6;
+        const anchorY = marginY + ((row * 2 + 1) * innerH) / 6;
 
-        if (isTop) y = height - marginY;
-        if (isBottom) y = marginY;
-        if (isMid) y = height / 2;
+        const angleRad = (rotation * Math.PI) / 180;
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+
+        const rotateVec = (vx: number, vy: number) => {
+          return { x: vx * cos - vy * sin, y: vx * sin + vy * cos };
+        };
+
+        const getRotatedBounds = (w: number, h: number) => {
+          const p0 = rotateVec(0, 0);
+          const p1 = rotateVec(w, 0);
+          const p2 = rotateVec(0, h);
+          const p3 = rotateVec(w, h);
+          const minX = Math.min(p0.x, p1.x, p2.x, p3.x);
+          const maxX = Math.max(p0.x, p1.x, p2.x, p3.x);
+          const minY = Math.min(p0.y, p1.y, p2.y, p3.y);
+          const maxY = Math.max(p0.y, p1.y, p2.y, p3.y);
+          return { minX, maxX, minY, maxY };
+        };
+
+        const clampOriginToMargins = (originX: number, originY: number, w: number, h: number) => {
+          const b = getRotatedBounds(w, h);
+          let x = originX;
+          let y = originY;
+
+          const left = x + b.minX;
+          const right = x + b.maxX;
+          const bottom = y + b.minY;
+          const top = y + b.maxY;
+
+          if (left < marginX) x += marginX - left;
+          if (right > width - marginX) x -= right - (width - marginX);
+          if (bottom < marginY) y += marginY - bottom;
+          if (top > height - marginY) y -= top - (height - marginY);
+
+          return { x, y };
+        };
 
         if (mode === "text" && textFont) {
-          const fontSize = rotation !== 0 ? Math.max(8, effectiveFontSize - 2) : effectiveFontSize;
+          const fontSize = effectiveFontSize;
           const textWidth = textFont.widthOfTextAtSize(watermarkText, fontSize);
           const textHeight = textFont.heightAtSize(fontSize);
 
-          // Derive a target anchor point that takes current font size into account,
-          // so left/right/top/bottom positions sit close to the margins but remain inside.
-          let targetX = width / 2;
-          let targetY = height / 2;
-
-          if (isLeft) {
-            targetX = marginX + textWidth / 2;
-          } else if (isRight) {
-            targetX = width - marginX - textWidth / 2;
-          } else if (isCenter) {
-            targetX = width / 2;
-          }
-
-          if (isTop) {
-            targetY = height - marginY - textHeight / 2;
-          } else if (isBottom) {
-            targetY = marginY + textHeight / 2;
-          } else if (isMid) {
-            targetY = height / 2;
-          }
-
-          // Center the text block around the target point.
-          let drawX = targetX - textWidth / 2;
-          let drawY = targetY - textHeight / 2;
-
-          // For exact mid-center we keep the text perfectly centered and skip clamping.
-          const isExactCenter = isMid && isCenter;
-
-          if (!isExactCenter) {
-            // Clamp so text box stays within margins (approximate, ignores rotation, but safe).
-            if (drawX < marginX) drawX = marginX;
-            if (drawX + textWidth > width - marginX) {
-              drawX = width - marginX - textWidth;
-            }
-            if (drawY < marginY) drawY = marginY;
-            if (drawY + textHeight > height - marginY) {
-              drawY = height - marginY - textHeight;
-            }
-          }
+          const centerVec = rotateVec(textWidth / 2, textHeight / 2);
+          const unclampedX = anchorX - centerVec.x;
+          const unclampedY = anchorY - centerVec.y;
+          const { x: drawX, y: drawY } = clampOriginToMargins(unclampedX, unclampedY, textWidth, textHeight);
 
           // Parse text color from hex
           const parseColor = (hex: string) => {
@@ -2170,30 +2169,13 @@ app.post(
                 opacity,
               });
             } else {
-              // For rotated text, position the underline at a fixed small distance along the
-              // perpendicular to the text direction so the visual gap stays tight.
-              const angleRad = (rotation * Math.PI) / 180;
-              const ux = Math.cos(angleRad);  // direction along the text
-              const uy = Math.sin(angleRad);
-
-              // Perpendicular vector ("down" relative to the text)
-              const nx = -uy;
-              const ny = ux;
-
-              // Approximate visual center of the rendered text block
-              const cx = drawX + textWidth / 2;
-              const cy = drawY + textHeight / 2;
-
-              // Offset distance from the text center to the underline (negative so it overlaps very slightly)
-              const offset = -fontSize * 0.015;
-              const midX = cx - nx * offset;
-              const midY = cy - ny * offset;
-
-              const halfLen = textWidth / 2;
-              const startX = midX - ux * halfLen;
-              const startY = midY - uy * halfLen;
-              const endX = midX + ux * halfLen;
-              const endY = midY + uy * halfLen;
+              const underlineOffset = fontSize * 0.12;
+              const startRel = rotateVec(0, -underlineOffset);
+              const endRel = rotateVec(textWidth, -underlineOffset);
+              const startX = drawX + startRel.x;
+              const startY = drawY + startRel.y;
+              const endX = drawX + endRel.x;
+              const endY = drawY + endRel.y;
 
               page.drawLine({
                 start: { x: startX, y: startY },
@@ -2206,27 +2188,15 @@ app.post(
           }
         } else if (mode === "image" && imageEmbed) {
           const imageDims = imageEmbed.scale(1);
-          const maxWidth = width * (rotation !== 0 ? 0.36 : 0.45);
-          const maxHeight = height * (rotation !== 0 ? 0.36 : 0.45);
+          const maxWidth = width * 0.45;
+          const maxHeight = height * 0.45;
           const scale = Math.min(maxWidth / imageDims.width, maxHeight / imageDims.height, 1);
           const { width: w, height: h } = imageEmbed.scale(scale);
 
-          let drawX = x - w / 2;
-          let drawY = y - h / 2;
-
-          const isExactCenter = isMid && isCenter;
-
-          if (!isExactCenter) {
-            // Clamp image box so it remains inside margins (again, approximate wrt rotation).
-            if (drawX < marginX) drawX = marginX;
-            if (drawX + w > width - marginX) {
-              drawX = width - marginX - w;
-            }
-            if (drawY < marginY) drawY = marginY;
-            if (drawY + h > height - marginY) {
-              drawY = height - marginY - h;
-            }
-          }
+          const centerVec = rotateVec(w / 2, h / 2);
+          const unclampedX = anchorX - centerVec.x;
+          const unclampedY = anchorY - centerVec.y;
+          const { x: drawX, y: drawY } = clampOriginToMargins(unclampedX, unclampedY, w, h);
 
           page.drawImage(imageEmbed, {
             x: drawX,

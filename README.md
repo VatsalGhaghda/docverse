@@ -55,7 +55,7 @@ These are required on the machine/container running the backend if you want the 
 
 ### 1) Clone the repository
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/VatsalGhaghda/DocVerse
 cd DocVerse
 ```
 

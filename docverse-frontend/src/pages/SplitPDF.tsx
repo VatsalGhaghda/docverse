@@ -690,89 +690,93 @@ export default function SplitPDF() {
                             {ranges.map((r, idx) => (
                               <div
                                 key={r.id}
-                                className="flex flex-col gap-2 text-sm sm:grid sm:grid-cols-[auto,1fr,1fr,auto] sm:items-center"
+                                className="flex items-center gap-1 text-sm sm:gap-2 sm:grid sm:grid-cols-[auto,1fr,1fr,auto] sm:items-center"
                               >
-                                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                <span className="text-xs text-muted-foreground whitespace-nowrap shrink-0">
                                   Range {idx + 1}
                                 </span>
-                                <div className="flex items-center gap-2 w-full">
-                                  <span className="text-xs text-muted-foreground">from</span>
-                                  <div className="flex flex-1 sm:flex-none items-stretch rounded-full border bg-background overflow-hidden">
-                                    <Input
-                                      type="number"
-                                      min={1}
-                                      max={pageCount ?? undefined}
-                                      value={r.from}
-                                      onChange={(e) => updateRange(r.id, "from", e.target.value)}
-                                      className="h-8 w-full sm:w-20 border-0 focus-visible:ring-0 rounded-none text-right pr-2 no-native-spinner"
-                                    />
-                                    <div className="flex flex-col border-l bg-muted/60">
-                                      <button
-                                        type="button"
-                                        className="flex-1 px-1 flex items-center justify-center hover:bg-muted"
-                                        onClick={() => {
-                                          const current = parseInt(r.from || "1", 10) || 1;
-                                          updateRange(r.id, "from", String(current + 1));
-                                        }}
-                                      >
-                                        <ChevronUp className="h-3 w-3" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="flex-1 px-1 flex items-center justify-center hover:bg-muted"
-                                        onClick={() => {
-                                          const current = parseInt(r.from || "1", 10) || 1;
-                                          updateRange(r.id, "from", String(current - 1));
-                                        }}
-                                      >
-                                        <ChevronDown className="h-3 w-3" />
-                                      </button>
+                                <div className="flex items-center gap-1 flex-1 min-w-0 sm:gap-2 sm:contents">
+                                  <div className="flex items-center gap-1 min-w-0 sm:gap-2">
+                                    {/* <span className="text-xs text-muted-foreground">from</span> */}
+                                    <div className="flex flex-none w-20 sm:w-auto items-stretch rounded-full border bg-background overflow-hidden">
+                                      <Input
+                                        type="number"
+                                        min={1}
+                                        max={pageCount ?? undefined}
+                                        value={r.from}
+                                        onChange={(e) => updateRange(r.id, "from", e.target.value)}
+                                        className="h-8 w-full sm:w-20 border-0 focus-visible:ring-0 rounded-none text-right pr-1 sm:pr-2 no-native-spinner"
+                                      />
+                                      <div className="flex flex-col border-l bg-muted/60">
+                                        <button
+                                          type="button"
+                                          className="flex-1 px-0.5 sm:px-1 flex items-center justify-center hover:bg-muted"
+                                          onClick={() => {
+                                            const current = parseInt(r.from || "1", 10) || 1;
+                                            updateRange(r.id, "from", String(current + 1));
+                                          }}
+                                        >
+                                          <ChevronUp className="h-3 w-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="flex-1 px-0.5 sm:px-1 flex items-center justify-center hover:bg-muted"
+                                          onClick={() => {
+                                            const current = parseInt(r.from || "1", 10) || 1;
+                                            updateRange(r.id, "from", String(current - 1));
+                                          }}
+                                        >
+                                          <ChevronDown className="h-3 w-3" />
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                                <div className="flex items-center gap-2 w-full">
-                                  <span className="text-xs text-muted-foreground">to</span>
-                                  <div className="flex flex-1 sm:flex-none items-stretch rounded-full border bg-background overflow-hidden">
-                                    <Input
-                                      type="number"
-                                      min={1}
-                                      max={pageCount ?? undefined}
-                                      value={r.to}
-                                      onChange={(e) => updateRange(r.id, "to", e.target.value)}
-                                      className="h-8 w-full sm:w-20 border-0 focus-visible:ring-0 rounded-none text-right pr-2 no-native-spinner"
-                                    />
-                                    <div className="flex flex-col border-l bg-muted/60">
-                                      <button
-                                        type="button"
-                                        className="flex-1 px-1 flex items-center justify-center hover:bg-muted"
-                                        onClick={() => {
-                                          const current = parseInt(r.to || "1", 10) || 1;
-                                          updateRange(r.id, "to", String(current + 1));
-                                        }}
-                                      >
-                                        <ChevronUp className="h-3 w-3" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="flex-1 px-1 flex items-center justify-center hover:bg-muted"
-                                        onClick={() => {
-                                          const current = parseInt(r.to || "1", 10) || 1;
-                                          updateRange(r.id, "to", String(current - 1));
-                                        }}
-                                      >
-                                        <ChevronDown className="h-3 w-3" />
-                                      </button>
+
+                                  <div className="flex items-center gap-1 min-w-0 sm:gap-2">
+                                    <span className="text-xs text-muted-foreground">to</span>
+                                    <div className="flex flex-none w-20 sm:w-auto items-stretch rounded-full border bg-background overflow-hidden">
+                                      <Input
+                                        type="number"
+                                        min={1}
+                                        max={pageCount ?? undefined}
+                                        value={r.to}
+                                        onChange={(e) => updateRange(r.id, "to", e.target.value)}
+                                        className="h-8 w-full sm:w-20 border-0 focus-visible:ring-0 rounded-none text-right pr-1 sm:pr-2 no-native-spinner"
+                                      />
+                                      <div className="flex flex-col border-l bg-muted/60">
+                                        <button
+                                          type="button"
+                                          className="flex-1 px-0.5 sm:px-1 flex items-center justify-center hover:bg-muted"
+                                          onClick={() => {
+                                            const current = parseInt(r.to || "1", 10) || 1;
+                                            updateRange(r.id, "to", String(current + 1));
+                                          }}
+                                        >
+                                          <ChevronUp className="h-3 w-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="flex-1 px-0.5 sm:px-1 flex items-center justify-center hover:bg-muted"
+                                          onClick={() => {
+                                            const current = parseInt(r.to || "1", 10) || 1;
+                                            updateRange(r.id, "to", String(current - 1));
+                                          }}
+                                        >
+                                          <ChevronDown className="h-3 w-3" />
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
+
+                                  <button
+                                    type="button"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted-foreground hover:border-destructive/70 hover:text-destructive transition"
+                                    onClick={() => removeRange(r.id)}
+                                    disabled={ranges.length <= 1}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
                                 </div>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted-foreground hover:border-destructive/70 hover:text-destructive transition self-end sm:self-auto"
-                                  onClick={() => removeRange(r.id)}
-                                  disabled={ranges.length <= 1}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
                               </div>
                             ))}
                             <Button variant="outline" size="sm" onClick={addRange} className="mt-1 w-full sm:w-auto">

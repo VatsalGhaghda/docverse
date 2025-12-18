@@ -554,7 +554,153 @@ export default function AddPageNumbers() {
                         <div className="space-y-2">
                           <Label>Page range (optional)</Label>
                           <div className="space-y-2 text-xs text-muted-foreground">
-                            <div className="grid grid-cols-2 sm:grid-cols-[auto,auto,auto,auto] items-center gap-2">
+                            <div className="flex flex-col gap-2 sm:hidden">
+                              <div className="flex items-center gap-2 w-full">
+                                <span className="whitespace-nowrap">From page</span>
+                                <div className="flex flex-1 items-stretch rounded-full border bg-background overflow-hidden">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    max={pageCount ?? undefined}
+                                    value={rangeFrom}
+                                    onChange={(e) => {
+                                      const value = e.target.value;
+                                      if (value === "") {
+                                        setRangeFrom("");
+                                        updateRangeState("", rangeTo);
+                                        return;
+                                      }
+                                      let n = parseInt(value, 10);
+                                      if (Number.isNaN(n)) return;
+                                      const total = pageCount ?? undefined;
+                                      if (total) {
+                                        n = Math.min(Math.max(1, n), total);
+                                      } else {
+                                        n = Math.max(1, n);
+                                      }
+                                      const str = String(n);
+                                      setRangeFrom(str);
+                                      updateRangeState(str, rangeTo);
+                                    }}
+                                    className="h-8 w-full border-0 focus-visible:ring-0 rounded-none text-right pr-1 no-native-spinner"
+                                  />
+                                  <div className="flex flex-col border-l bg-muted/60">
+                                    <button
+                                      type="button"
+                                      className="flex-1 px-0.5 flex items-center justify-center hover:bg-muted"
+                                      onClick={() => {
+                                        const total = pageCount ?? undefined;
+                                        let current = parseInt(rangeFrom || "1", 10) || 1;
+                                        current += 1;
+                                        if (total) {
+                                          current = Math.min(Math.max(1, current), total);
+                                        } else {
+                                          current = Math.max(1, current);
+                                        }
+                                        const str = String(current);
+                                        setRangeFrom(str);
+                                        updateRangeState(str, rangeTo);
+                                      }}
+                                    >
+                                      <ChevronUp className="h-3 w-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="flex-1 px-0.5 flex items-center justify-center hover:bg-muted"
+                                      onClick={() => {
+                                        const total = pageCount ?? undefined;
+                                        let current = parseInt(rangeFrom || "1", 10) || 1;
+                                        current -= 1;
+                                        if (total) {
+                                          current = Math.min(Math.max(1, current), total);
+                                        } else {
+                                          current = Math.max(1, current);
+                                        }
+                                        const str = String(current);
+                                        setRangeFrom(str);
+                                        updateRangeState(str, rangeTo);
+                                      }}
+                                    >
+                                      <ChevronDown className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 w-full">
+                                <span className="whitespace-nowrap">to page</span>
+                                <div className="flex flex-1 items-stretch rounded-full border bg-background overflow-hidden">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    max={pageCount ?? undefined}
+                                    value={rangeTo}
+                                    onChange={(e) => {
+                                      const value = e.target.value;
+                                      if (value === "") {
+                                        setRangeTo("");
+                                        updateRangeState(rangeFrom, "");
+                                        return;
+                                      }
+                                      let n = parseInt(value, 10);
+                                      if (Number.isNaN(n)) return;
+                                      const total = pageCount ?? undefined;
+                                      if (total) {
+                                        n = Math.min(Math.max(1, n), total);
+                                      } else {
+                                        n = Math.max(1, n);
+                                      }
+                                      const str = String(n);
+                                      setRangeTo(str);
+                                      updateRangeState(rangeFrom, str);
+                                    }}
+                                    className="h-8 w-full border-0 focus-visible:ring-0 rounded-none text-right pr-1 no-native-spinner"
+                                  />
+                                  <div className="flex flex-col border-l bg-muted/60">
+                                    <button
+                                      type="button"
+                                      className="flex-1 px-0.5 flex items-center justify-center hover:bg-muted"
+                                      onClick={() => {
+                                        const total = pageCount ?? undefined;
+                                        let current = parseInt(rangeTo || (rangeFrom || "1"), 10) || 1;
+                                        current += 1;
+                                        if (total) {
+                                          current = Math.min(Math.max(1, current), total);
+                                        } else {
+                                          current = Math.max(1, current);
+                                        }
+                                        const str = String(current);
+                                        setRangeTo(str);
+                                        updateRangeState(rangeFrom, str);
+                                      }}
+                                    >
+                                      <ChevronUp className="h-3 w-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="flex-1 px-0.5 flex items-center justify-center hover:bg-muted"
+                                      onClick={() => {
+                                        const total = pageCount ?? undefined;
+                                        let current = parseInt(rangeTo || (rangeFrom || "1"), 10) || 1;
+                                        current -= 1;
+                                        if (total) {
+                                          current = Math.min(Math.max(1, current), total);
+                                        } else {
+                                          current = Math.max(1, current);
+                                        }
+                                        const str = String(current);
+                                        setRangeTo(str);
+                                        updateRangeState(rangeFrom, str);
+                                      }}
+                                    >
+                                      <ChevronDown className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="hidden sm:grid grid-cols-[auto,auto,auto,auto] items-center gap-2">
                               <span className="whitespace-nowrap">From page</span>
                               <div className="inline-flex items-stretch rounded-full border bg-background overflow-hidden">
                                 <Input
